@@ -657,12 +657,20 @@ async def admin_add_student_id(message: types.Message, state: FSMContext, db: Da
     async with db.pool.acquire() as conn:
         internal = is_internal_test_account(full_name=full_name, telegram_id=telegram_id)
         account_id = db.require_account_id()
+        identity_id = None
+        if hasattr(db, "ensure_global_identity"):
+            identity = await db.ensure_global_identity(
+                telegram_id=telegram_id,
+                full_name=full_name,
+                username=None,
+            )
+            identity_id = identity["id"] if identity else None
         await conn.execute(
             """
-            INSERT INTO users (account_id, telegram_id, full_name, username, role, is_internal_account)
-            VALUES ($1, $2, $3, NULL, 'student', $4)
+            INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, is_internal_account)
+            VALUES ($1, $2, $3, $4, NULL, 'student', $5)
             """,
-            account_id, telegram_id, full_name, internal,
+            account_id, identity_id, telegram_id, full_name, internal,
         )
     await db.ensure_account_user(telegram_id, "student")
 

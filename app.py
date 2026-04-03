@@ -57,12 +57,14 @@ class DatabaseMiddleware(BaseMiddleware):
         resolved_context = await self.db.resolve_account_context(user_id, invite_token=invite_token)
         account = resolved_context.get("account")
         account_user = resolved_context.get("account_user")
+        identity = resolved_context.get("identity")
         context_token = self.db.push_account_context(account["id"] if account else self.db.account_id)
 
         try:
             data["account"] = account
             data["account_user"] = account_user
             data["account_invite"] = resolved_context.get("invite")
+            data["identity"] = identity
 
             db_user = await self.db.get_user(user_id) if user_id else None
             data["db_user"] = db_user

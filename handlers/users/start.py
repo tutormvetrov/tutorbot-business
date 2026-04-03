@@ -31,29 +31,30 @@ def _menu_keyboard_for_role(role: str | None, user_id: int) -> object:
     return get_main_menu_keyboard(role, is_platform_admin=user_id == config.ADMIN_ID)
 
 
+async def _identity_id_for(db: Database, telegram_id: int, full_name: str = "", username: str | None = None) -> int | None:
+    if not hasattr(db, "ensure_global_identity"):
+        return None
+    identity = await db.ensure_global_identity(
+        telegram_id=telegram_id,
+        full_name=full_name,
+        username=username,
+    )
+    return identity["id"] if identity else None
+
+
 async def _complete_workspace_invite(message: Message, db: Database, invite_token: str) -> bool:
-    invite_result = await db.redeem_account_invite(invite_token, message.from_user.id) if hasattr(db, "redeem_account_invite") else None
+    invite_result = await db.redeem_account_invite(
+        invite_token,
+        message.from_user.id,
+        full_name=message.from_user.full_name,
+        username=message.from_user.username,
+    ) if hasattr(db, "redeem_account_invite") else None
     if not invite_result:
         return False
 
     account = invite_result.get("account") or {}
     role = (invite_result.get("account_user") or {}).get("role") or (invite_result.get("invite") or {}).get("role")
     role_label = workspace_role_label(role)
-    if hasattr(db, "push_account_context") and account.get("id"):
-        account_token = db.push_account_context(account["id"])
-    else:
-        account_token = None
-    try:
-        if hasattr(db, "upsert_account_identity_user"):
-            await db.upsert_account_identity_user(
-                telegram_id=message.from_user.id,
-                full_name=message.from_user.full_name,
-                username=message.from_user.username,
-                role=role or "assistant",
-            )
-    finally:
-        if account_token is not None:
-            db.reset_account_context(account_token)
 
     await message.answer(
         "✅ <b>Workspace подключён</b>\n\n"
@@ -68,19 +69,27 @@ async def _complete_workspace_invite(message: Message, db: Database, invite_toke
 
 async def _register_admin(message: Message, db: Database):
     account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
+    identity_id = await _identity_id_for(
+        db,
+        telegram_id=message.from_user.id,
+        full_name=message.from_user.full_name,
+        username=message.from_user.username,
+    )
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (account_id, telegram_id, full_name, username, role)
-            VALUES ($1, $2, $3, $4, 'owner')
+            INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
+            VALUES ($1, $2, $3, $4, $5, 'owner')
             ON CONFLICT (telegram_id) DO UPDATE
             SET account_id = EXCLUDED.account_id,
+                identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = 'owner',
                 is_active = true
             """,
             account_id,
+            identity_id,
             message.from_user.id,
             message.from_user.full_name,
             message.from_user.username,
@@ -272,6 +281,12 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     language = data["language"]
     user_id = callback_query.from_user.id
     account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
+    identity_id = await _identity_id_for(
+        db,
+        telegram_id=user_id,
+        full_name=full_name,
+        username=callback_query.from_user.username,
+    )
     is_internal_account = is_internal_test_account(
         full_name=full_name,
         username=callback_query.from_user.username or "",
@@ -281,10 +296,11 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (account_id, telegram_id, full_name, username, role, age, language, level, is_internal_account)
-            VALUES ($1, $2, $3, $4, 'student', $5, $6, $7, $8)
+            INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, age, language, level, is_internal_account)
+            VALUES ($1, $2, $3, $4, $5, 'student', $6, $7, $8, $9)
             ON CONFLICT (telegram_id) DO UPDATE
             SET account_id = EXCLUDED.account_id,
+                identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
@@ -295,6 +311,7 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
                 is_active = true
             """,
             account_id,
+            identity_id,
             user_id,
             full_name,
             callback_query.from_user.username,
@@ -366,6 +383,12 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
     data = await state.get_data()
     full_name = data["full_name"]
     account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
+    identity_id = await _identity_id_for(
+        db,
+        telegram_id=message.from_user.id,
+        full_name=full_name,
+        username=message.from_user.username,
+    )
     is_internal_account = is_internal_test_account(
         full_name=full_name,
         username=message.from_user.username or "",
@@ -375,10 +398,11 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (account_id, telegram_id, full_name, username, role, is_internal_account)
-            VALUES ($1, $2, $3, $4, 'parent', $5)
+            INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, is_internal_account)
+            VALUES ($1, $2, $3, $4, $5, 'parent', $6)
             ON CONFLICT (telegram_id) DO UPDATE
             SET account_id = EXCLUDED.account_id,
+                identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
@@ -386,6 +410,7 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
                 is_active = true
             """,
             account_id,
+            identity_id,
             message.from_user.id,
             full_name,
             message.from_user.username,

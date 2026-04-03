@@ -8,6 +8,20 @@ class DatabaseSchemaMixin:
     def _log_migration_failure(self, migration_name: str, exc: Exception):
         logger.error("Schema migration failed: %s: %s", migration_name, exc)
 
+    async def create_table_global_identities(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS global_identities (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL UNIQUE,
+                full_name VARCHAR(255),
+                username VARCHAR(255),
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
     async def create_table_accounts(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
@@ -29,6 +43,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                identity_id INTEGER REFERENCES global_identities(id),
                 telegram_id BIGINT NOT NULL UNIQUE,
                 full_name VARCHAR(255) NOT NULL,
                 username VARCHAR(255),
@@ -121,6 +136,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS account_users (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                identity_id INTEGER REFERENCES global_identities(id) ON DELETE SET NULL,
                 telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                 role TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -311,6 +327,41 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_users_add_lesson_format", exc)
             return
 
+    async def migrate_identity_split_columns(self):
+        statements = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS identity_id INTEGER REFERENCES global_identities(id);",
+            "ALTER TABLE account_users ADD COLUMN IF NOT EXISTS identity_id INTEGER REFERENCES global_identities(id);",
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_identity_split_columns:{index}", exc)
+                return
+
+    async def migrate_identity_split_indexes(self):
+        statements = [
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS account_users_account_identity_unique_idx
+            ON account_users (account_id, identity_id)
+            WHERE identity_id IS NOT NULL;
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS users_identity_id_idx
+            ON users (identity_id);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS account_users_identity_id_idx
+            ON account_users (identity_id);
+            """,
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_identity_split_indexes:{index}", exc)
+                return
+
     async def migrate_users_add_speech_style(self):
         try:
             await self.execute(
@@ -499,8 +550,70 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("backfill_account_users", exc)
             return
 
+    async def backfill_global_identities(self):
+        try:
+            rows = await self.execute(
+                """
+                SELECT telegram_id, full_name, username
+                FROM users
+                WHERE telegram_id IS NOT NULL
+                ORDER BY telegram_id
+                """,
+                fetch=True,
+            )
+            for row in rows:
+                await self.execute(
+                    """
+                    INSERT INTO global_identities (telegram_id, full_name, username, status, updated_at, last_seen_at)
+                    VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), global_identities.full_name),
+                        username = COALESCE(NULLIF(EXCLUDED.username, ''), global_identities.username),
+                        status = 'active',
+                        updated_at = CURRENT_TIMESTAMP,
+                        last_seen_at = CURRENT_TIMESTAMP
+                    """,
+                    row["telegram_id"],
+                    row.get("full_name") or "",
+                    row.get("username") or "",
+                    execute=True,
+                )
+            await self.execute(
+                """
+                UPDATE users u
+                SET identity_id = gi.id
+                FROM global_identities gi
+                WHERE u.telegram_id = gi.telegram_id
+                  AND (u.identity_id IS NULL OR u.identity_id <> gi.id)
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("backfill_global_identities", exc)
+            return
+
+    async def backfill_account_user_identities(self):
+        try:
+            await self.execute(
+                """
+                UPDATE account_users au
+                SET identity_id = gi.id
+                FROM global_identities gi
+                WHERE au.telegram_id = gi.telegram_id
+                  AND (au.identity_id IS NULL OR au.identity_id <> gi.id)
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("backfill_account_user_identities", exc)
+            return
+
     async def verify_required_schema(self):
         required_columns = {
+            "global_identities": {
+                "telegram_id",
+                "status",
+            },
             "accounts": {
                 "code",
                 "name",
@@ -510,6 +623,7 @@ class DatabaseSchemaMixin:
             },
             "users": {
                 "account_id",
+                "identity_id",
                 "language",
                 "level",
                 "age",
@@ -533,7 +647,7 @@ class DatabaseSchemaMixin:
             "calendar_student_links": {"account_id"},
             "plans": {"code", "display_name"},
             "subscriptions": {"account_id", "plan_code", "status", "trial_ends_at", "paid_until"},
-            "account_users": {"account_id", "telegram_id", "role"},
+            "account_users": {"account_id", "identity_id", "telegram_id", "role"},
             "account_feature_overrides": {"account_id", "capability", "is_enabled"},
             "account_invites": {"account_id", "token", "role", "status"},
             "groups": {"account_id", "name", "is_active"},
@@ -565,6 +679,7 @@ class DatabaseSchemaMixin:
             )
 
     async def create_all_tables(self):
+        await self.create_table_global_identities()
         await self.create_table_accounts()
         await self.create_table_users()
         await self.create_table_student_parent()
@@ -586,6 +701,8 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_language_level()
         await self.migrate_users_add_lesson_format()
         await self.migrate_users_add_speech_style()
+        await self.migrate_identity_split_columns()
+        await self.migrate_identity_split_indexes()
         await self.migrate_internal_test_accounts()
         await self.migrate_account_aware_schema()
         await self.migrate_owner_role()
@@ -596,6 +713,8 @@ class DatabaseSchemaMixin:
         await self.seed_default_plans()
         await self.ensure_default_account()
         await self.backfill_default_account_context()
+        await self.backfill_global_identities()
         await self.ensure_default_subscription()
         await self.backfill_account_users()
+        await self.backfill_account_user_identities()
         await self.verify_required_schema()

@@ -298,6 +298,19 @@ def build_partition_text(partition: dict) -> str:
     return "\n".join(lines)
 
 
+def build_identity_split_text(snapshot: dict) -> str:
+    return "\n".join([
+        "🪪 <b>Identity Split Readiness</b>",
+        "",
+        "✅ База готова к следующему migration step." if snapshot.get("ready") else "⚠️ Есть записи без identity link.",
+        f"Global identities: <b>{int(snapshot.get('total_global_identities', 0))}</b>",
+        f"Users c identity link: <b>{int(snapshot.get('linked_users', 0))}</b>",
+        f"Memberships в account: <b>{int(snapshot.get('total_memberships', 0))}</b>",
+        f"Users без identity: <b>{int(snapshot.get('users_missing_identity', 0))}</b>",
+        f"Memberships без identity: <b>{int(snapshot.get('account_users_missing_identity', 0))}</b>",
+    ])
+
+
 def build_support_text(snapshot: dict, product: dict) -> str:
     account = snapshot.get("account") or {}
     billing = snapshot.get("billing") or {}
@@ -305,6 +318,7 @@ def build_support_text(snapshot: dict, product: dict) -> str:
     owner_user = snapshot.get("owner_user") or {}
     analytics = snapshot.get("analytics") or {}
     partition = snapshot.get("partition") or {}
+    identity_split = snapshot.get("identity_split") or {}
 
     lines = [
         "🆘 <b>Support Tooling</b>",
@@ -335,6 +349,8 @@ def build_support_text(snapshot: dict, product: dict) -> str:
         f"Активных родителей: <b>{int(analytics.get('active_parents', 0))}</b>",
         f"Групп: <b>{int(analytics.get('active_groups', 0))}</b>",
         f"Уроков на 7 дней: <b>{int(analytics.get('lessons_next_7_days', 0))}</b>",
+        "",
+        build_identity_split_text(identity_split),
         "",
         build_partition_text(partition),
     ])

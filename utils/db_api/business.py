@@ -14,6 +14,62 @@ class DatabaseBusinessMixin:
             raise RuntimeError("Database account context is not initialized.")
         return int(self.account_id)
 
+    async def get_global_identity(self, telegram_id: int):
+        return await self.execute(
+            """
+            SELECT *
+            FROM global_identities
+            WHERE telegram_id = $1
+            LIMIT 1
+            """,
+            telegram_id,
+            fetchrow=True,
+        )
+
+    async def get_global_identity_by_id(self, identity_id: int):
+        return await self.execute(
+            """
+            SELECT *
+            FROM global_identities
+            WHERE id = $1
+            LIMIT 1
+            """,
+            identity_id,
+            fetchrow=True,
+        )
+
+    async def ensure_global_identity(
+        self,
+        telegram_id: int,
+        full_name: str = "",
+        username: str | None = None,
+    ):
+        await self.execute(
+            """
+            INSERT INTO global_identities (
+                telegram_id,
+                full_name,
+                username,
+                status,
+                updated_at,
+                last_seen_at
+            )
+            VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (telegram_id) DO UPDATE
+            SET full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), global_identities.full_name),
+                username = COALESCE(NULLIF(EXCLUDED.username, ''), global_identities.username),
+                status = 'active',
+                updated_at = CURRENT_TIMESTAMP,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            telegram_id,
+            full_name or "",
+            username or "",
+            execute=True,
+        )
+        identity = await self.get_global_identity(telegram_id)
+        return dict(identity) if identity else None
+
     async def get_default_account(self):
         return await self.execute(
             """
@@ -41,10 +97,18 @@ class DatabaseBusinessMixin:
         if account_id is not None:
             return await self.execute(
                 """
-                SELECT au.*, a.name AS account_name, a.slug AS account_slug, a.status AS account_status
+                SELECT
+                    au.*,
+                    a.name AS account_name,
+                    a.slug AS account_slug,
+                    a.status AS account_status,
+                    gi.full_name AS identity_full_name,
+                    gi.username AS identity_username
                 FROM account_users au
                 JOIN accounts a
                   ON a.id = au.account_id
+                LEFT JOIN global_identities gi
+                  ON gi.id = au.identity_id
                 WHERE au.telegram_id = $1
                   AND au.account_id = $2
                 ORDER BY au.id
@@ -57,10 +121,18 @@ class DatabaseBusinessMixin:
 
         return await self.execute(
             """
-            SELECT au.*, a.name AS account_name, a.slug AS account_slug, a.status AS account_status
+            SELECT
+                au.*,
+                a.name AS account_name,
+                a.slug AS account_slug,
+                a.status AS account_status,
+                gi.full_name AS identity_full_name,
+                gi.username AS identity_username
             FROM account_users au
             JOIN accounts a
               ON a.id = au.account_id
+            LEFT JOIN global_identities gi
+              ON gi.id = au.identity_id
             WHERE au.telegram_id = $1
               AND au.status = 'active'
               AND a.status = 'active'
@@ -116,10 +188,13 @@ class DatabaseBusinessMixin:
         if account is None:
             account = await self.get_default_account()
 
+        identity = await self.get_global_identity(telegram_id) if telegram_id is not None else None
+
         return {
             "account": dict(account) if account else None,
             "account_user": dict(account_user) if account_user else None,
             "invite": dict(invite) if invite else None,
+            "identity": dict(identity) if identity else None,
         }
 
     async def seed_default_plans(self):
@@ -223,16 +298,20 @@ class DatabaseBusinessMixin:
 
     async def ensure_account_user(self, telegram_id: int, role: str):
         account_id = self.require_account_id()
+        identity = await self.ensure_global_identity(telegram_id)
+        identity_id = identity["id"] if identity else None
         await self.execute(
             """
-            INSERT INTO account_users (account_id, telegram_id, role, status)
-            VALUES ($1, $2, $3, 'active')
+            INSERT INTO account_users (account_id, identity_id, telegram_id, role, status)
+            VALUES ($1, $2, $3, $4, 'active')
             ON CONFLICT (account_id, telegram_id) DO UPDATE
-            SET role = EXCLUDED.role,
+            SET identity_id = COALESCE(EXCLUDED.identity_id, account_users.identity_id),
+                role = EXCLUDED.role,
                 status = 'active',
                 updated_at = CURRENT_TIMESTAMP
             """,
             account_id,
+            identity_id,
             telegram_id,
             role,
             execute=True,
@@ -247,18 +326,25 @@ class DatabaseBusinessMixin:
         username: str | None,
         role: str,
     ):
+        identity = await self.ensure_global_identity(
+            telegram_id=telegram_id,
+            full_name=full_name,
+            username=username,
+        )
         await self.execute(
             """
-            INSERT INTO users (account_id, telegram_id, full_name, username, role)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (telegram_id) DO UPDATE
             SET account_id = EXCLUDED.account_id,
+                identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
                 is_active = true
             """,
             self.require_account_id(),
+            identity["id"] if identity else None,
             telegram_id,
             full_name,
             username,
@@ -517,7 +603,13 @@ class DatabaseBusinessMixin:
             fetchrow=True,
         )
 
-    async def redeem_account_invite(self, token: str, telegram_id: int):
+    async def redeem_account_invite(
+        self,
+        token: str,
+        telegram_id: int,
+        full_name: str = "",
+        username: str | None = None,
+    ):
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 invite = await conn.fetchrow(
@@ -535,16 +627,60 @@ class DatabaseBusinessMixin:
                 if not invite:
                     return None
 
+                identity_id = await conn.fetchval(
+                    """
+                    INSERT INTO global_identities (
+                        telegram_id,
+                        full_name,
+                        username,
+                        status,
+                        updated_at,
+                        last_seen_at
+                    )
+                    VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), global_identities.full_name),
+                        username = COALESCE(NULLIF(EXCLUDED.username, ''), global_identities.username),
+                        status = 'active',
+                        updated_at = CURRENT_TIMESTAMP,
+                        last_seen_at = CURRENT_TIMESTAMP
+                    RETURNING id
+                    """,
+                    telegram_id,
+                    full_name or "",
+                    username or "",
+                )
                 await conn.execute(
                     """
-                    INSERT INTO account_users (account_id, telegram_id, role, status)
-                    VALUES ($1, $2, $3, 'active')
+                    INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET account_id = EXCLUDED.account_id,
+                        identity_id = EXCLUDED.identity_id,
+                        full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), users.full_name),
+                        username = COALESCE(NULLIF(EXCLUDED.username, ''), users.username),
+                        role = EXCLUDED.role,
+                        is_active = true
+                    """,
+                    invite["account_id"],
+                    identity_id,
+                    telegram_id,
+                    full_name or "",
+                    username or "",
+                    invite["role"],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO account_users (account_id, identity_id, telegram_id, role, status)
+                    VALUES ($1, $2, $3, $4, 'active')
                     ON CONFLICT (account_id, telegram_id) DO UPDATE
-                    SET role = EXCLUDED.role,
+                    SET identity_id = EXCLUDED.identity_id,
+                        role = EXCLUDED.role,
                         status = 'active',
                         updated_at = CURRENT_TIMESTAMP
                     """,
                     invite["account_id"],
+                    identity_id,
                     telegram_id,
                     invite["role"],
                 )
@@ -637,12 +773,77 @@ class DatabaseBusinessMixin:
                 snapshot["healthy"] = False
         return snapshot
 
+    async def get_identity_split_snapshot(self):
+        users_missing_identity = int(
+            await self.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM users
+                WHERE account_id = $1
+                  AND identity_id IS NULL
+                """,
+                self.require_account_id(),
+                fetchval=True,
+            ) or 0
+        )
+        account_users_missing_identity = int(
+            await self.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM account_users
+                WHERE account_id = $1
+                  AND identity_id IS NULL
+                """,
+                self.require_account_id(),
+                fetchval=True,
+            ) or 0
+        )
+        linked_users = int(
+            await self.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM users
+                WHERE account_id = $1
+                  AND identity_id IS NOT NULL
+                """,
+                self.require_account_id(),
+                fetchval=True,
+            ) or 0
+        )
+        total_memberships = int(
+            await self.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM account_users
+                WHERE account_id = $1
+                """,
+                self.require_account_id(),
+                fetchval=True,
+            ) or 0
+        )
+        total_global_identities = int(
+            await self.execute(
+                "SELECT COUNT(*)::int FROM global_identities",
+                fetchval=True,
+            ) or 0
+        )
+        ready = users_missing_identity == 0 and account_users_missing_identity == 0
+        return {
+            "ready": ready,
+            "users_missing_identity": users_missing_identity,
+            "account_users_missing_identity": account_users_missing_identity,
+            "linked_users": linked_users,
+            "total_memberships": total_memberships,
+            "total_global_identities": total_global_identities,
+        }
+
     async def get_support_snapshot(self):
         account = await self.get_account()
         billing = await self.get_account_billing_snapshot()
         analytics = await self.get_account_analytics_snapshot()
         invites = await self.get_active_account_invites()
         partition = await self.get_partition_health_snapshot()
+        identity_split = await self.get_identity_split_snapshot()
         owner_user = await self.get_account_owner_user()
         active_members = await self.execute(
             """
@@ -661,6 +862,7 @@ class DatabaseBusinessMixin:
             "active_invites": [dict(item) for item in invites],
             "active_invites_count": len(invites or []),
             "partition": partition,
+            "identity_split": identity_split,
             "owner_user": dict(owner_user) if owner_user else None,
             "active_members": int(active_members or 0),
         }
