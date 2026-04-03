@@ -3,6 +3,32 @@ from utils.text_utils import extract_student_name
 
 
 class DatabaseUserMixin:
+    async def get_user_by_row_id(self, user_row_id: int):
+        account_id = self.require_account_id()
+        return await self.execute(
+            """
+            SELECT
+                u.*,
+                (
+                    SELECT MIN(l.lesson_date)
+                    FROM lessons l
+                    WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
+                      AND l.account_id = $2
+                      AND l.lesson_date IS NOT NULL
+                ) AS first_lesson_date
+            FROM users u
+            WHERE u.id = $1
+              AND u.account_id = $2
+            """,
+            user_row_id,
+            account_id,
+            fetchrow=True,
+        )
+
+    async def get_user_row_id(self, telegram_id: int) -> int | None:
+        user = await self.get_user(telegram_id)
+        return int(user["id"]) if user else None
+
     async def get_user(self, telegram_id: int):
         account_id = self.require_account_id()
         return await self.execute(
@@ -12,7 +38,7 @@ class DatabaseUserMixin:
                 (
                     SELECT MIN(l.lesson_date)
                     FROM lessons l
-                    WHERE l.student_id = u.telegram_id
+                    WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                       AND l.account_id = $2
                       AND l.lesson_date IS NOT NULL
                 ) AS first_lesson_date
@@ -52,9 +78,11 @@ class DatabaseUserMixin:
     async def upsert_parent_student_link(self, parent_id: int, student_info: str, student_id: int | None = None):
         account_id = self.require_account_id()
         normalized_target = normalize_person_name(extract_student_name(student_info))
+        parent_user_id = await self.get_user_row_id(parent_id)
+        student_user_id = await self.get_user_row_id(student_id) if student_id is not None else None
         links = await self.execute(
             """
-            SELECT id, student_info, student_id
+            SELECT id, student_info, student_id, student_user_id
             FROM student_parent
             WHERE parent_id = $1
               AND account_id = $2
@@ -73,24 +101,30 @@ class DatabaseUserMixin:
                     UPDATE student_parent
                     SET student_info = $2,
                         student_id = $3,
+                        student_user_id = $4,
+                        parent_user_id = $5,
                         is_active = true
                     WHERE id = $1
                     """,
                     link["id"],
                     student_info,
                     student_id,
+                    student_user_id,
+                    parent_user_id,
                     execute=True,
                 )
                 return link["id"]
 
         return await self.execute(
             """
-            INSERT INTO student_parent (account_id, parent_id, student_id, student_info)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO student_parent (account_id, parent_user_id, parent_id, student_user_id, student_id, student_info)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
             """,
             account_id,
+            parent_user_id,
             parent_id,
+            student_user_id,
             student_id,
             student_info,
             fetchval=True,
@@ -99,11 +133,12 @@ class DatabaseUserMixin:
     async def sync_parent_links_for_student(self, student_id: int, full_name: str):
         account_id = self.require_account_id()
         normalized_student_name = normalize_person_name(full_name)
+        student_user_id = await self.get_user_row_id(student_id)
         if not normalized_student_name:
             return 0
         links = await self.execute(
             """
-            SELECT id, student_info, student_id
+            SELECT id, student_info, student_id, student_user_id
             FROM student_parent
             WHERE account_id = $1
               AND is_active = true
@@ -116,12 +151,13 @@ class DatabaseUserMixin:
             normalized_link_name = normalize_person_name(extract_student_name(link.get("student_info") or ""))
             if normalized_link_name != normalized_student_name:
                 continue
-            if link.get("student_id") == student_id:
+            if link.get("student_id") == student_id and link.get("student_user_id") == student_user_id:
                 continue
             await self.execute(
-                "UPDATE student_parent SET student_id = $2 WHERE id = $1",
+                "UPDATE student_parent SET student_id = $2, student_user_id = $3 WHERE id = $1",
                 link["id"],
                 student_id,
+                student_user_id,
                 execute=True,
             )
             updated += 1
@@ -144,7 +180,13 @@ class DatabaseUserMixin:
             SELECT sp.student_info, sp.student_id, u.full_name
             FROM student_parent sp
             LEFT JOIN users u
-              ON u.telegram_id = sp.student_id
+              ON (
+                    u.id = sp.student_user_id
+                    OR (
+                        sp.student_user_id IS NULL
+                        AND u.telegram_id = sp.student_id
+                    )
+                 )
              AND u.account_id = $2
             WHERE sp.parent_id = $1
               AND sp.account_id = $2
@@ -173,27 +215,28 @@ class DatabaseUserMixin:
             """
             SELECT
                 u.telegram_id,
+                u.id,
                 u.full_name,
                 u.language,
                 u.level,
                 COALESCE((
                     SELECT SUM(p.lessons_remaining)::int
                     FROM payments p
-                    WHERE p.student_id = u.telegram_id
+                    WHERE (p.student_user_id = u.id OR (p.student_user_id IS NULL AND p.student_id = u.telegram_id))
                       AND p.account_id = $1
                       AND p.status = 'confirmed'
                 ), 0) AS lesson_balance,
                 (
                     SELECT MIN(l.lesson_date)
                     FROM lessons l
-                    WHERE l.student_id = u.telegram_id
+                    WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                       AND l.account_id = $1
                       AND l.lesson_date IS NOT NULL
                 ) AS first_lesson_date,
                 (
                     SELECT MIN(l.lesson_date)
                     FROM lessons l
-                    WHERE l.student_id = u.telegram_id
+                    WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                       AND l.account_id = $1
                       AND l.status = 'active'
                       AND l.lesson_date IS NOT NULL
@@ -217,11 +260,12 @@ class DatabaseUserMixin:
             """
             SELECT
                 u.telegram_id,
+                u.id,
                 u.full_name,
                 COALESCE(COUNT(csl.id), 0)::int AS alias_count
             FROM users u
             LEFT JOIN calendar_student_links csl
-              ON csl.student_id = u.telegram_id
+              ON (csl.student_user_id = u.id OR (csl.student_user_id IS NULL AND csl.student_id = u.telegram_id))
              AND csl.account_id = $1
              AND csl.is_active = true
             WHERE u.account_id = $1
@@ -256,68 +300,147 @@ class DatabaseUserMixin:
         return {
             "role": user["role"],
             "homework": await self.execute(
-                "SELECT COUNT(*) FROM homework WHERE student_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM homework
+                WHERE account_id = $2
+                  AND (student_id = $1 OR student_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "lessons": await self.execute(
-                "SELECT COUNT(*) FROM lessons WHERE student_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM lessons
+                WHERE account_id = $2
+                  AND (student_id = $1 OR student_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "payments_as_student": await self.execute(
-                "SELECT COUNT(*) FROM payments WHERE student_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM payments
+                WHERE account_id = $2
+                  AND (student_id = $1 OR student_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "payments_as_payer": await self.execute(
-                "SELECT COUNT(*) FROM payments WHERE payer_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM payments
+                WHERE account_id = $2
+                  AND (payer_id = $1 OR payer_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "calendar_links": await self.execute(
-                "SELECT COUNT(*) FROM calendar_student_links WHERE student_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM calendar_student_links
+                WHERE account_id = $2
+                  AND (student_id = $1 OR student_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "parent_links_as_student": await self.execute(
-                "SELECT COUNT(*) FROM student_parent WHERE student_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM student_parent
+                WHERE account_id = $2
+                  AND (student_id = $1 OR student_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
             "parent_links_as_parent": await self.execute(
-                "SELECT COUNT(*) FROM student_parent WHERE parent_id = $1 AND account_id = $2",
-                telegram_id, account_id, fetchval=True,
+                """
+                SELECT COUNT(*)
+                FROM student_parent
+                WHERE account_id = $2
+                  AND (parent_id = $1 OR parent_user_id = $3)
+                """,
+                telegram_id, account_id, user["id"], fetchval=True,
             ) or 0,
         }
 
     async def delete_user_fully(self, telegram_id: int):
         account_id = self.require_account_id()
+        user = await self.get_user(telegram_id)
+        if not user:
+            return
+        user_row_id = user["id"]
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM calendar_student_links WHERE student_id = $1 AND account_id = $2",
+                    """
+                    DELETE FROM calendar_student_links
+                    WHERE account_id = $2
+                      AND (student_id = $1 OR student_user_id = $3)
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM homework WHERE student_id = $1 AND account_id = $2",
+                    """
+                    DELETE FROM homework
+                    WHERE account_id = $2
+                      AND (student_id = $1 OR student_user_id = $3)
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM lessons WHERE student_id = $1 AND account_id = $2",
+                    """
+                    DELETE FROM lessons
+                    WHERE account_id = $2
+                      AND (student_id = $1 OR student_user_id = $3)
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM payments WHERE account_id = $2 AND (student_id = $1 OR payer_id = $1)",
+                    """
+                    DELETE FROM payments
+                    WHERE account_id = $2
+                      AND (
+                          student_id = $1
+                          OR payer_id = $1
+                          OR student_user_id = $3
+                          OR payer_user_id = $3
+                      )
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM student_parent WHERE parent_id = $1 AND account_id = $2",
+                    """
+                    DELETE FROM student_parent
+                    WHERE account_id = $2
+                      AND (parent_id = $1 OR parent_user_id = $3)
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM student_parent WHERE student_id = $1 AND account_id = $2",
+                    """
+                    DELETE FROM student_parent
+                    WHERE account_id = $2
+                      AND (student_id = $1 OR student_user_id = $3)
+                    """,
                     telegram_id,
                     account_id,
+                    user_row_id,
+                )
+                await conn.execute(
+                    "DELETE FROM group_members WHERE student_id = $1 OR student_user_id = $2",
+                    telegram_id,
+                    user_row_id,
                 )
                 await conn.execute(
                     """
@@ -421,7 +544,7 @@ class DatabaseUserMixin:
                     SELECT COUNT(*)::int
                     FROM lessons l
                     JOIN users u
-                      ON u.telegram_id = l.student_id
+                      ON (l.student_user_id = u.id OR (l.student_user_id IS NULL AND u.telegram_id = l.student_id))
                      AND u.account_id = $1
                     WHERE l.status = 'active'
                       AND l.account_id = $1
@@ -436,7 +559,7 @@ class DatabaseUserMixin:
                         SELECT u.telegram_id
                         FROM users u
                         LEFT JOIN payments p
-                          ON p.student_id = u.telegram_id
+                          ON (p.student_user_id = u.id OR (p.student_user_id IS NULL AND p.student_id = u.telegram_id))
                          AND p.account_id = $1
                          AND p.status = 'confirmed'
                         WHERE u.account_id = $1
@@ -451,7 +574,7 @@ class DatabaseUserMixin:
                     SELECT COUNT(*)::int
                     FROM lessons l
                     JOIN users u
-                      ON u.telegram_id = l.student_id
+                      ON (l.student_user_id = u.id OR (l.student_user_id IS NULL AND u.telegram_id = l.student_id))
                      AND u.account_id = $1
                     WHERE l.status = 'freeze_pending'
                       AND l.account_id = $1
@@ -462,7 +585,7 @@ class DatabaseUserMixin:
                     SELECT COUNT(*)::int
                     FROM homework h
                     JOIN users u
-                      ON u.telegram_id = h.student_id
+                      ON (h.student_user_id = u.id OR (h.student_user_id IS NULL AND u.telegram_id = h.student_id))
                      AND u.account_id = $1
                     WHERE h.status = 'active'
                       AND h.account_id = $1
@@ -479,7 +602,7 @@ class DatabaseUserMixin:
                       AND NOT EXISTS (
                           SELECT 1
                           FROM lessons l
-                          WHERE l.student_id = u.telegram_id
+                          WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                             AND l.account_id = $1
                             AND l.status = 'active'
                             AND l.lesson_date IS NOT NULL
@@ -503,7 +626,7 @@ class DatabaseUserMixin:
                 EXISTS (
                     SELECT 1
                     FROM lessons l
-                    WHERE l.student_id = student.telegram_id
+                    WHERE (l.student_user_id = student.id OR (l.student_user_id IS NULL AND l.student_id = student.telegram_id))
                       AND l.account_id = $3
                       AND l.lesson_date >= $1
                       AND l.lesson_date < $2
@@ -512,25 +635,37 @@ class DatabaseUserMixin:
                 COALESCE((
                     SELECT COUNT(*)::int
                     FROM homework h
-                    WHERE h.student_id = student.telegram_id
+                    WHERE (h.student_user_id = student.id OR (h.student_user_id IS NULL AND h.student_id = student.telegram_id))
                       AND h.account_id = $3
                       AND h.status = 'active'
                 ), 0) AS active_homework_count,
                 COALESCE((
                     SELECT SUM(p.lessons_remaining)::int
                     FROM payments p
-                    WHERE p.student_id = student.telegram_id
+                    WHERE (p.student_user_id = student.id OR (p.student_user_id IS NULL AND p.student_id = student.telegram_id))
                       AND p.account_id = $3
                       AND p.status = 'confirmed'
                 ), 0) AS lesson_balance
             FROM student_parent sp
             JOIN users parent
-              ON parent.telegram_id = sp.parent_id
+              ON (
+                    parent.id = sp.parent_user_id
+                    OR (
+                        sp.parent_user_id IS NULL
+                        AND parent.telegram_id = sp.parent_id
+                    )
+                 )
              AND parent.account_id = $3
              AND parent.role = 'parent'
              AND parent.is_active = true
             JOIN users student
-              ON student.telegram_id = sp.student_id
+              ON (
+                    student.id = sp.student_user_id
+                    OR (
+                        sp.student_user_id IS NULL
+                        AND student.telegram_id = sp.student_id
+                    )
+                 )
              AND student.account_id = $3
              AND student.role = 'student'
              AND student.is_active = true

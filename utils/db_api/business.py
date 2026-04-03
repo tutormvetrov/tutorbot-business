@@ -837,6 +837,104 @@ class DatabaseBusinessMixin:
             "total_global_identities": total_global_identities,
         }
 
+    async def get_domain_user_ref_snapshot(self):
+        account_id = self.require_account_id()
+        checks = {
+            "student_parent.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM student_parent
+                WHERE account_id = $1
+                  AND student_id IS NOT NULL
+                  AND student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "student_parent.parent_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM student_parent
+                WHERE account_id = $1
+                  AND parent_id IS NOT NULL
+                  AND parent_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "lessons.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM lessons
+                WHERE account_id = $1
+                  AND student_id IS NOT NULL
+                  AND student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "homework.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM homework
+                WHERE account_id = $1
+                  AND student_id IS NOT NULL
+                  AND student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "payments.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM payments
+                WHERE account_id = $1
+                  AND student_id IS NOT NULL
+                  AND student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "payments.payer_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM payments
+                WHERE account_id = $1
+                  AND payer_id IS NOT NULL
+                  AND payer_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "calendar_student_links.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM calendar_student_links
+                WHERE account_id = $1
+                  AND student_id IS NOT NULL
+                  AND student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+            "group_members.student_user_id": (
+                """
+                SELECT COUNT(*)::int
+                FROM group_members gm
+                JOIN groups g
+                  ON g.id = gm.group_id
+                WHERE g.account_id = $1
+                  AND gm.student_id IS NOT NULL
+                  AND gm.student_user_id IS NULL
+                """,
+                (account_id,),
+            ),
+        }
+        missing = {}
+        total_missing = 0
+        for key, (query, params) in checks.items():
+            count = int(await self.execute(query, *params, fetchval=True) or 0)
+            missing[key] = count
+            total_missing += count
+        return {
+            "ready": total_missing == 0,
+            "missing": missing,
+            "total_missing": total_missing,
+        }
+
     async def get_support_snapshot(self):
         account = await self.get_account()
         billing = await self.get_account_billing_snapshot()
@@ -844,6 +942,7 @@ class DatabaseBusinessMixin:
         invites = await self.get_active_account_invites()
         partition = await self.get_partition_health_snapshot()
         identity_split = await self.get_identity_split_snapshot()
+        domain_user_refs = await self.get_domain_user_ref_snapshot()
         owner_user = await self.get_account_owner_user()
         active_members = await self.execute(
             """
@@ -863,6 +962,7 @@ class DatabaseBusinessMixin:
             "active_invites_count": len(invites or []),
             "partition": partition,
             "identity_split": identity_split,
+            "domain_user_refs": domain_user_refs,
             "owner_user": dict(owner_user) if owner_user else None,
             "active_members": int(active_members or 0),
         }
@@ -908,7 +1008,13 @@ class DatabaseBusinessMixin:
             JOIN groups g
               ON g.id = gm.group_id
             JOIN users u
-              ON u.telegram_id = gm.student_id
+              ON (
+                    u.id = gm.student_user_id
+                    OR (
+                        gm.student_user_id IS NULL
+                        AND u.telegram_id = gm.student_id
+                    )
+                 )
             WHERE gm.group_id = $1
               AND g.account_id = $2
               AND u.is_active = true
@@ -946,36 +1052,40 @@ class DatabaseBusinessMixin:
         )
 
     async def add_student_to_group(self, group_id: int, student_id: int):
+        student_user_id = await self.get_user_row_id(student_id)
         await self.execute(
             """
-            INSERT INTO group_members (group_id, student_id)
-            SELECT $1, $2
+            INSERT INTO group_members (group_id, student_user_id, student_id)
+            SELECT $1, $2, $3
             WHERE EXISTS (
                 SELECT 1
                 FROM groups g
                 JOIN users u
-                  ON u.telegram_id = $2
+                  ON u.id = $2
                 WHERE g.id = $1
-                  AND g.account_id = $3
-                  AND u.account_id = $3
+                  AND g.account_id = $4
+                  AND u.account_id = $4
             )
             ON CONFLICT (group_id, student_id) DO NOTHING
             """,
             group_id,
+            student_user_id,
             student_id,
             self.require_account_id(),
             execute=True,
         )
 
     async def remove_student_from_group(self, group_id: int, student_id: int):
+        student_user_id = await self.get_user_row_id(student_id)
         await self.execute(
             """
             DELETE FROM group_members
             WHERE group_id = $1
-              AND student_id = $2
+              AND (student_id = $2 OR student_user_id = $3)
             """,
             group_id,
             student_id,
+            student_user_id,
             execute=True,
         )
 

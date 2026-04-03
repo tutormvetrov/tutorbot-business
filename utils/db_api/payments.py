@@ -1,15 +1,16 @@
 class DatabasePaymentMixin:
     async def get_student_payments(self, payer_id: int, limit: int = 5):
         account_id = self.require_account_id()
+        payer_user_id = await self.get_user_row_id(payer_id)
         return await self.execute(
             """
             SELECT * FROM payments
-            WHERE payer_id = $1
-              AND account_id = $2
+            WHERE account_id = $2
+              AND (payer_id = $1 OR payer_user_id = $3)
             ORDER BY created_at DESC
-            LIMIT $3
+            LIMIT $4
             """,
-            payer_id, account_id, limit, fetch=True,
+            payer_id, account_id, payer_user_id, limit, fetch=True,
         )
 
     async def get_payment_by_id(self, payment_id: int):
@@ -32,12 +33,24 @@ class DatabasePaymentMixin:
 
     async def add_payment(self, student_id: int, amount: float, lessons_count: int):
         account_id = self.require_account_id()
+        student_user_id = await self.get_user_row_id(student_id)
         return await self.execute(
             """
             INSERT INTO payments
-                (account_id, payer_id, student_id, amount, lessons_count, lessons_remaining, status, payment_date)
-            VALUES ($1, $2, $2, $3, $4, $4, 'confirmed', CURRENT_TIMESTAMP)
+                (
+                    account_id,
+                    payer_user_id,
+                    student_user_id,
+                    payer_id,
+                    student_id,
+                    amount,
+                    lessons_count,
+                    lessons_remaining,
+                    status,
+                    payment_date
+                )
+            VALUES ($1, $2, $2, $3, $3, $4, $5, $5, 'confirmed', CURRENT_TIMESTAMP)
             RETURNING id
             """,
-            account_id, student_id, amount, lessons_count, fetchval=True,
+            account_id, student_user_id, student_id, amount, lessons_count, fetchval=True,
         )

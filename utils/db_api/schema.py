@@ -58,6 +58,8 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS student_parent (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                student_user_id INTEGER REFERENCES users(id),
+                parent_user_id INTEGER REFERENCES users(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 parent_id BIGINT REFERENCES users(telegram_id),
                 student_info TEXT,
@@ -71,6 +73,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS lessons (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                student_user_id INTEGER REFERENCES users(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 google_event_id TEXT,
                 lesson_date TIMESTAMP,
@@ -87,6 +90,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS homework (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                student_user_id INTEGER REFERENCES users(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
@@ -102,6 +106,8 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                payer_user_id INTEGER REFERENCES users(id),
+                student_user_id INTEGER REFERENCES users(id),
                 payer_id BIGINT REFERENCES users(telegram_id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 amount DECIMAL(10,2) NOT NULL,
@@ -118,6 +124,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS calendar_student_links (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
+                student_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                 calendar_alias TEXT,
                 calendar_event_pattern TEXT,
@@ -222,6 +229,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS group_members (
                 id SERIAL PRIMARY KEY,
                 group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                student_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (group_id, student_id)
@@ -360,6 +368,42 @@ class DatabaseSchemaMixin:
                 await self.execute(statement, execute=True)
             except Exception as exc:
                 self._log_migration_failure(f"migrate_identity_split_indexes:{index}", exc)
+                return
+
+    async def migrate_domain_user_ref_columns(self):
+        statements = [
+            "ALTER TABLE student_parent ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE student_parent ADD COLUMN IF NOT EXISTS parent_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE homework ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS payer_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE calendar_student_links ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+            "ALTER TABLE group_members ADD COLUMN IF NOT EXISTS student_user_id INTEGER REFERENCES users(id);",
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_domain_user_ref_columns:{index}", exc)
+                return
+
+    async def migrate_domain_user_ref_indexes(self):
+        statements = [
+            "CREATE INDEX IF NOT EXISTS student_parent_student_user_id_idx ON student_parent (student_user_id);",
+            "CREATE INDEX IF NOT EXISTS student_parent_parent_user_id_idx ON student_parent (parent_user_id);",
+            "CREATE INDEX IF NOT EXISTS lessons_student_user_id_idx ON lessons (student_user_id);",
+            "CREATE INDEX IF NOT EXISTS homework_student_user_id_idx ON homework (student_user_id);",
+            "CREATE INDEX IF NOT EXISTS payments_student_user_id_idx ON payments (student_user_id);",
+            "CREATE INDEX IF NOT EXISTS payments_payer_user_id_idx ON payments (payer_user_id);",
+            "CREATE INDEX IF NOT EXISTS calendar_student_links_student_user_id_idx ON calendar_student_links (student_user_id);",
+            "CREATE INDEX IF NOT EXISTS group_members_student_user_id_idx ON group_members (student_user_id);",
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_domain_user_ref_indexes:{index}", exc)
                 return
 
     async def migrate_users_add_speech_style(self):
@@ -608,6 +652,82 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("backfill_account_user_identities", exc)
             return
 
+    async def backfill_domain_user_refs(self):
+        statements = [
+            """
+            UPDATE student_parent sp
+            SET student_user_id = u.id
+            FROM users u
+            WHERE sp.account_id = u.account_id
+              AND sp.student_id = u.telegram_id
+              AND (sp.student_user_id IS NULL OR sp.student_user_id <> u.id)
+            """,
+            """
+            UPDATE student_parent sp
+            SET parent_user_id = u.id
+            FROM users u
+            WHERE sp.account_id = u.account_id
+              AND sp.parent_id = u.telegram_id
+              AND (sp.parent_user_id IS NULL OR sp.parent_user_id <> u.id)
+            """,
+            """
+            UPDATE lessons l
+            SET student_user_id = u.id
+            FROM users u
+            WHERE l.account_id = u.account_id
+              AND l.student_id = u.telegram_id
+              AND (l.student_user_id IS NULL OR l.student_user_id <> u.id)
+            """,
+            """
+            UPDATE homework h
+            SET student_user_id = u.id
+            FROM users u
+            WHERE h.account_id = u.account_id
+              AND h.student_id = u.telegram_id
+              AND (h.student_user_id IS NULL OR h.student_user_id <> u.id)
+            """,
+            """
+            UPDATE payments p
+            SET student_user_id = u.id
+            FROM users u
+            WHERE p.account_id = u.account_id
+              AND p.student_id = u.telegram_id
+              AND (p.student_user_id IS NULL OR p.student_user_id <> u.id)
+            """,
+            """
+            UPDATE payments p
+            SET payer_user_id = u.id
+            FROM users u
+            WHERE p.account_id = u.account_id
+              AND p.payer_id = u.telegram_id
+              AND (p.payer_user_id IS NULL OR p.payer_user_id <> u.id)
+            """,
+            """
+            UPDATE calendar_student_links csl
+            SET student_user_id = u.id
+            FROM users u
+            WHERE csl.account_id = u.account_id
+              AND csl.student_id = u.telegram_id
+              AND (csl.student_user_id IS NULL OR csl.student_user_id <> u.id)
+            """,
+            """
+            UPDATE group_members gm
+            SET student_user_id = u.id
+            FROM groups g
+            JOIN users u
+              ON u.account_id = g.account_id
+            WHERE gm.group_id = g.id
+              AND gm.student_id = u.telegram_id
+              AND (gm.student_user_id IS NULL OR gm.student_user_id <> u.id)
+            """,
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"backfill_domain_user_refs:{index}", exc)
+                return
+
     async def verify_required_schema(self):
         required_columns = {
             "global_identities": {
@@ -633,25 +753,26 @@ class DatabaseSchemaMixin:
                 "lesson_format",
                 "speech_style",
             },
-            "student_parent": {"account_id"},
+            "student_parent": {"account_id", "student_user_id", "parent_user_id"},
             "lessons": {
                 "account_id",
+                "student_user_id",
                 "lesson_date",
                 "reminder_sent",
                 "balance_consumed",
                 "homework_check_reminder_sent",
                 "source",
             },
-            "homework": {"account_id", "reminder_sent"},
-            "payments": {"account_id"},
-            "calendar_student_links": {"account_id"},
+            "homework": {"account_id", "student_user_id", "reminder_sent"},
+            "payments": {"account_id", "student_user_id", "payer_user_id"},
+            "calendar_student_links": {"account_id", "student_user_id"},
             "plans": {"code", "display_name"},
             "subscriptions": {"account_id", "plan_code", "status", "trial_ends_at", "paid_until"},
             "account_users": {"account_id", "identity_id", "telegram_id", "role"},
             "account_feature_overrides": {"account_id", "capability", "is_enabled"},
             "account_invites": {"account_id", "token", "role", "status"},
             "groups": {"account_id", "name", "is_active"},
-            "group_members": {"group_id", "student_id"},
+            "group_members": {"group_id", "student_id", "student_user_id"},
         }
 
         rows = await self.execute(
@@ -703,6 +824,8 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_speech_style()
         await self.migrate_identity_split_columns()
         await self.migrate_identity_split_indexes()
+        await self.migrate_domain_user_ref_columns()
+        await self.migrate_domain_user_ref_indexes()
         await self.migrate_internal_test_accounts()
         await self.migrate_account_aware_schema()
         await self.migrate_owner_role()
@@ -717,4 +840,5 @@ class DatabaseSchemaMixin:
         await self.ensure_default_subscription()
         await self.backfill_account_users()
         await self.backfill_account_user_identities()
+        await self.backfill_domain_user_refs()
         await self.verify_required_schema()

@@ -311,6 +311,18 @@ def build_identity_split_text(snapshot: dict) -> str:
     ])
 
 
+def build_domain_user_refs_text(snapshot: dict) -> str:
+    lines = [
+        "🔗 <b>Surrogate User Refs</b>",
+        "",
+        "✅ Доменные таблицы заполнены новыми `*_user_id` ссылками." if snapshot.get("ready") else "⚠️ Остались legacy-only строки без `*_user_id`.",
+        f"Всего незаполненных ссылок: <b>{int(snapshot.get('total_missing', 0))}</b>",
+    ]
+    for key, count in snapshot.get("missing", {}).items():
+        lines.append(f"• {html.quote(key)}: <b>{int(count)}</b>")
+    return "\n".join(lines)
+
+
 def build_support_text(snapshot: dict, product: dict) -> str:
     account = snapshot.get("account") or {}
     billing = snapshot.get("billing") or {}
@@ -319,6 +331,7 @@ def build_support_text(snapshot: dict, product: dict) -> str:
     analytics = snapshot.get("analytics") or {}
     partition = snapshot.get("partition") or {}
     identity_split = snapshot.get("identity_split") or {}
+    domain_user_refs = snapshot.get("domain_user_refs") or {}
 
     lines = [
         "🆘 <b>Support Tooling</b>",
@@ -351,6 +364,8 @@ def build_support_text(snapshot: dict, product: dict) -> str:
         f"Уроков на 7 дней: <b>{int(analytics.get('lessons_next_7_days', 0))}</b>",
         "",
         build_identity_split_text(identity_split),
+        "",
+        build_domain_user_refs_text(domain_user_refs),
         "",
         build_partition_text(partition),
     ])

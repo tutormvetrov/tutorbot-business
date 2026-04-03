@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,8 +13,15 @@ if str(ROOT) not in sys.path:
 from keyboards.inline import make_billing_overrides_keyboard, make_recipient_select_keyboard
 from keyboards.inline import get_main_menu_keyboard
 from utils.db_api.postgresql import Database
+from utils.db_api.users import DatabaseUserMixin
 from utils.capabilities import resolve_subscription
-from utils.product_ui import build_identity_split_text, build_invites_text, build_subscription_text, build_support_text
+from utils.product_ui import (
+    build_domain_user_refs_text,
+    build_identity_split_text,
+    build_invites_text,
+    build_subscription_text,
+    build_support_text,
+)
 from utils.workspace import build_invite_start_link, extract_invite_token, workspace_role_label
 
 
@@ -185,6 +193,13 @@ class WorkspaceStageFourTest(unittest.TestCase):
                     "users_missing_identity": 0,
                     "account_users_missing_identity": 0,
                 },
+                "domain_user_refs": {
+                    "ready": True,
+                    "total_missing": 0,
+                    "missing": {
+                        "lessons.student_user_id": 0,
+                    },
+                },
                 "owner_user": {"full_name": "Owner Demo"},
                 "active_members": 2,
                 "active_invites_count": 1,
@@ -196,6 +211,7 @@ class WorkspaceStageFourTest(unittest.TestCase):
         self.assertIn("Demo Workspace", text)
         self.assertIn("Data Partitioning", text)
         self.assertIn("Identity Split Readiness", text)
+        self.assertIn("Surrogate User Refs", text)
         self.assertIn("users: account=5, other=0, null=0", text)
 
     def test_identity_split_text_reports_missing_links(self):
@@ -213,6 +229,47 @@ class WorkspaceStageFourTest(unittest.TestCase):
         self.assertIn("Есть записи без identity link", text)
         self.assertIn("Global identities: <b>7</b>", text)
         self.assertIn("Users без identity: <b>2</b>", text)
+
+    def test_domain_user_refs_text_reports_missing_surrogate_refs(self):
+        text = build_domain_user_refs_text(
+            {
+                "ready": False,
+                "total_missing": 3,
+                "missing": {
+                    "lessons.student_user_id": 2,
+                    "payments.student_user_id": 1,
+                },
+            }
+        )
+
+        self.assertIn("legacy-only строки", text)
+        self.assertIn("lessons.student_user_id: <b>2</b>", text)
+        self.assertIn("payments.student_user_id: <b>1</b>", text)
+
+
+class _UserRowIdFake(DatabaseUserMixin):
+    def __init__(self, row):
+        self.row = row
+
+    def require_account_id(self):
+        return 1
+
+    async def get_user(self, telegram_id: int):
+        if self.row and self.row["telegram_id"] == telegram_id:
+            return self.row
+        return None
+
+
+class UserRowIdHelperTest(unittest.TestCase):
+    def test_get_user_row_id_returns_projection_id(self):
+        fake = _UserRowIdFake({"id": 77, "telegram_id": 123})
+        value = asyncio.run(fake.get_user_row_id(123))
+        self.assertEqual(value, 77)
+
+    def test_get_user_row_id_returns_none_for_missing_user(self):
+        fake = _UserRowIdFake(None)
+        value = asyncio.run(fake.get_user_row_id(123))
+        self.assertIsNone(value)
 
 
 if __name__ == "__main__":
