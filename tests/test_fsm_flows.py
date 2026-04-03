@@ -306,7 +306,7 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
         class FakeDB:
             async def get_user(self, telegram_id):
                 return {
-                    "full_name": "Мария Вовк",
+                    "full_name": "Анна Смирнова",
                     "role": "student",
                     "is_active": True,
                     "language": "Французский",
@@ -327,7 +327,7 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.state, None)
         self.assertTrue(bot.edited_messages)
-        self.assertIn("Мария Вовк", bot.edited_messages[-1].text)
+        self.assertIn("Анна Смирнова", bot.edited_messages[-1].text)
 
     async def test_admin_can_send_sticker_to_student_inside_bot(self):
         state = DummyState()

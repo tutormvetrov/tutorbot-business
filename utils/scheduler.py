@@ -29,6 +29,12 @@ def _get_online_lesson_links() -> tuple[str, str]:
     return contacts.get("vk_call", ""), contacts.get("google_meet", "")
 
 
+def _get_review_url() -> str:
+    info = load_teacher_info()
+    contacts = info.get("contacts", {})
+    return contacts.get("review_url", "")
+
+
 async def build_reschedule_slot_payloads(db: "Database") -> list[tuple[str, str]]:
     slots = await find_next_free_reschedule_slots(db)
     return [(encode_reschedule_slot(slot), format_reschedule_slot_label(slot)) for slot in slots]
@@ -303,14 +309,16 @@ async def review_request_job(bot, db: "Database"):
     """Ежедневно проверяет, прошло ли 3 недели с первого занятия — отправляет просьбу об отзыве."""
     students = await db.get_students_for_review()
     sent_count = 0
+    review_url = _get_review_url()
     for student in students:
         try:
+            review_link_block = f"👉 {review_url}\n\n" if review_url else ""
             await bot.send_message(
                 student['telegram_id'],
                 "⭐ <b>Оставьте отзыв о занятиях!</b>\n\n"
                 "Прошло уже 3 недели с начала наших занятий.\n"
                 f"Буду очень признателен, если {choose_form(student.get('speech_style'), 'Вы найдёте', 'ты найдёшь')} минутку и {choose_form(student.get('speech_style'), 'оставите', 'оставишь')} отзыв:\n\n"
-                "👉 https://profi.ru/profile/VetrovMS2\n\n"
+                + review_link_block
                 + choose_tone_variant(
                     "Это помогает другим ученикам быстрее сориентироваться.",
                     "Это очень помогает другим ученикам найти хорошего преподавателя.",

@@ -1,21 +1,22 @@
 {
   "contacts": {
-    "phone": "+7 985 411 81 65",
-    "telegram": "@tutormvetrov",
-    "discord": "harmonie_celeste",
-    "google_meet": "https://meet.google.com/yic-ijmj-xbn",
-    "vk_call": "https://vk.com/call/join/z4Ei2GphvNft3dXt9B9TtwruVmF7-S_vlvuXuAwje6g",
-    "address": "г. Москва, Славянский бульвар, д. 15, кв. 51",
-    "booking_url": "https://t.me/tutormvetrov",
-    "calendar_url": "https://calendar.google.com/calendar/embed?src=tutor.m.vetrov%40gmail.com&ctz=Europe%2FMoscow",
-    "project_site_url": "https://45-140-205-4.sslip.io:8443/",
-    "level_test_url": "https://45-140-205-4.sslip.io:8443/"
+    "phone": "+7 900 000 00 00",
+    "telegram": "@your_tutor_bot",
+    "discord": "your_discord",
+    "google_meet": "https://meet.google.com/example-room",
+    "vk_call": "https://vk.com/call/join/example-room",
+    "address": "г. Ваш город, ул. Пример, д. 1",
+    "booking_url": "https://t.me/your_tutor_bot",
+    "calendar_url": "https://calendar.google.com/calendar/embed?src=your_calendar_id",
+    "project_site_url": "https://example.com",
+    "level_test_url": "https://example.com/level-test",
+    "review_url": "https://example.com/review"
   },
   "requisites": {
     "rate": "3000 ₽ / 90 минут",
-    "card": "2200 7013 1760 8773",
-    "sbp": "+7 985 411 81 65",
-    "sbp_banks": "Т-Банк, Райффайзен",
-    "usdt_trc20": "TSMncZQssfQxf6AeH6mHsv4EMYniin9uCa"
+    "card": "0000 0000 0000 0000",
+    "sbp": "+7 900 000 00 00",
+    "sbp_banks": "Ваш банк",
+    "usdt_trc20": "YOUR_WALLET"
   }
 }

@@ -57,7 +57,7 @@ class WarmUiTextTest(unittest.TestCase):
                     "phone": "+1 555 123",
                     "telegram": "@teacher",
                     "vk_call": "https://vk.com/call/join/example",
-                    "google_meet": "https://meet.google.com/yic-ijmj-xbn",
+                    "google_meet": "https://meet.google.com/example-room",
                     "address": "ул. Пример, 1",
                 }
             },

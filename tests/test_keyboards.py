@@ -45,11 +45,11 @@ class KeyboardHelpersTest(unittest.TestCase):
         )
 
     def test_contacts_keyboard_labels_google_meet_as_vpn_option(self):
-        kb = make_contacts_keyboard(google_meet_url="https://meet.google.com/yic-ijmj-xbn")
+        kb = make_contacts_keyboard(google_meet_url="https://meet.google.com/example-room")
         self.assertEqual(kb.inline_keyboard[0][0].text, "📹 Google Meet (VPN)")
         self.assertEqual(
             kb.inline_keyboard[0][0].url,
-            "https://meet.google.com/yic-ijmj-xbn",
+            "https://meet.google.com/example-room",
         )
 
     def test_admin_student_card_keyboard_exposes_quick_actions(self):

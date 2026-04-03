@@ -124,7 +124,7 @@ class SelfDeletePremiumPassTest(unittest.IsolatedAsyncioTestCase):
                     async def get_user(self, telegram_id):
                         return {
                             "telegram_id": telegram_id,
-                            "full_name": "Мария Вовк" if role == "student" else "Георгий Мартынов",
+                            "full_name": "Анна Смирнова" if role == "student" else "Игорь Смирнов",
                             "role": role,
                             "is_active": True,
                         }

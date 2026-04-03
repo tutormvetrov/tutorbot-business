@@ -168,9 +168,9 @@ async def admin_calendar_alias_student_selected(callback_query: types.CallbackQu
         "Если нужен regex, начните строку с <code>re:</code>",
         "",
         "Пример:",
-        "<code>Анной Глазковой</code>",
-        "<code>Анна Глазкова</code>",
-        "<code>re:Урок с Анной Глазковой</code>",
+        "<code>Анной Смирновой</code>",
+        "<code>Анна Смирнова</code>",
+        "<code>re:Урок с Анной Смирновой</code>",
     ]
     lines.extend(_build_calendar_sync_snapshot_lines())
     await callback_query.message.edit_text(
