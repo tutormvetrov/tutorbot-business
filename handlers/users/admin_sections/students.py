@@ -669,6 +669,12 @@ async def admin_add_student_id(message: types.Message, state: FSMContext, db: Da
             """
             INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, is_internal_account)
             VALUES ($1, $2, $3, $4, NULL, 'student', $5)
+            ON CONFLICT (account_id, telegram_id) DO UPDATE
+            SET identity_id = EXCLUDED.identity_id,
+                full_name = EXCLUDED.full_name,
+                role = EXCLUDED.role,
+                is_internal_account = EXCLUDED.is_internal_account,
+                is_active = true
             """,
             account_id, identity_id, telegram_id, full_name, internal,
         )

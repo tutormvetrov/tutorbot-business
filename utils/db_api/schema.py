@@ -8,6 +8,10 @@ class DatabaseSchemaMixin:
     def _log_migration_failure(self, migration_name: str, exc: Exception):
         logger.error("Schema migration failed: %s: %s", migration_name, exc)
 
+    @staticmethod
+    def _quote_identifier(value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
+
     async def create_table_global_identities(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS global_identities (
@@ -44,7 +48,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
                 identity_id INTEGER REFERENCES global_identities(id),
-                telegram_id BIGINT NOT NULL UNIQUE,
+                telegram_id BIGINT NOT NULL,
                 full_name VARCHAR(255) NOT NULL,
                 username VARCHAR(255),
                 role VARCHAR(50) NOT NULL,
@@ -60,8 +64,8 @@ class DatabaseSchemaMixin:
                 account_id INTEGER REFERENCES accounts(id),
                 student_user_id INTEGER REFERENCES users(id),
                 parent_user_id INTEGER REFERENCES users(id),
-                student_id BIGINT REFERENCES users(telegram_id),
-                parent_id BIGINT REFERENCES users(telegram_id),
+                student_id BIGINT,
+                parent_id BIGINT,
                 student_info TEXT,
                 is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -74,7 +78,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
                 student_user_id INTEGER REFERENCES users(id),
-                student_id BIGINT REFERENCES users(telegram_id),
+                student_id BIGINT,
                 google_event_id TEXT,
                 lesson_date TIMESTAMP,
                 status VARCHAR(50) DEFAULT 'active',
@@ -91,7 +95,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
                 student_user_id INTEGER REFERENCES users(id),
-                student_id BIGINT REFERENCES users(telegram_id),
+                student_id BIGINT,
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
                 deadline TIMESTAMP,
@@ -108,8 +112,8 @@ class DatabaseSchemaMixin:
                 account_id INTEGER REFERENCES accounts(id),
                 payer_user_id INTEGER REFERENCES users(id),
                 student_user_id INTEGER REFERENCES users(id),
-                payer_id BIGINT REFERENCES users(telegram_id),
-                student_id BIGINT REFERENCES users(telegram_id),
+                payer_id BIGINT,
+                student_id BIGINT,
                 amount DECIMAL(10,2) NOT NULL,
                 lessons_count INTEGER NOT NULL,
                 lessons_remaining INTEGER NOT NULL,
@@ -125,7 +129,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER REFERENCES accounts(id),
                 student_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                student_id BIGINT NOT NULL,
                 calendar_alias TEXT,
                 calendar_event_pattern TEXT,
                 is_active BOOLEAN DEFAULT true,
@@ -144,7 +148,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
                 identity_id INTEGER REFERENCES global_identities(id) ON DELETE SET NULL,
-                telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                telegram_id BIGINT NOT NULL,
                 role TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -230,7 +234,7 @@ class DatabaseSchemaMixin:
                 id SERIAL PRIMARY KEY,
                 group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 student_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                student_id BIGINT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (group_id, student_id)
             );
@@ -368,6 +372,70 @@ class DatabaseSchemaMixin:
                 await self.execute(statement, execute=True)
             except Exception as exc:
                 self._log_migration_failure(f"migrate_identity_split_indexes:{index}", exc)
+                return
+
+    async def migrate_users_account_scoped_unique_index(self):
+        try:
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS users_account_telegram_unique_idx
+                ON users (account_id, telegram_id);
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_account_scoped_unique_index", exc)
+            return
+
+    async def migrate_drop_legacy_user_telegram_foreign_keys(self):
+        legacy_fk_columns = [
+            ("student_parent", "student_id"),
+            ("student_parent", "parent_id"),
+            ("lessons", "student_id"),
+            ("homework", "student_id"),
+            ("payments", "payer_id"),
+            ("payments", "student_id"),
+            ("calendar_student_links", "student_id"),
+            ("account_users", "telegram_id"),
+            ("group_members", "student_id"),
+        ]
+        for index, (table_name, column_name) in enumerate(legacy_fk_columns, start=1):
+            try:
+                constraints = await self.execute(
+                    """
+                    SELECT DISTINCT c.conname
+                    FROM pg_constraint c
+                    JOIN pg_class tbl
+                      ON tbl.oid = c.conrelid
+                    JOIN pg_namespace ns
+                      ON ns.oid = tbl.relnamespace
+                    JOIN pg_attribute attr
+                      ON attr.attrelid = tbl.oid
+                     AND attr.attnum = ANY(c.conkey)
+                    JOIN pg_class ref_tbl
+                      ON ref_tbl.oid = c.confrelid
+                    WHERE c.contype = 'f'
+                      AND ns.nspname = current_schema()
+                      AND tbl.relname = $1
+                      AND attr.attname = $2
+                      AND ref_tbl.relname = 'users'
+                    """,
+                    table_name,
+                    column_name,
+                    fetch=True,
+                )
+                for row in constraints:
+                    quoted_table = self._quote_identifier(table_name)
+                    quoted_constraint = self._quote_identifier(row["conname"])
+                    await self.execute(
+                        f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {quoted_constraint};",
+                        execute=True,
+                    )
+            except Exception as exc:
+                self._log_migration_failure(
+                    f"migrate_drop_legacy_user_telegram_foreign_keys:{index}",
+                    exc,
+                )
                 return
 
     async def migrate_domain_user_ref_columns(self):
@@ -824,8 +892,10 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_speech_style()
         await self.migrate_identity_split_columns()
         await self.migrate_identity_split_indexes()
+        await self.migrate_users_account_scoped_unique_index()
         await self.migrate_domain_user_ref_columns()
         await self.migrate_domain_user_ref_indexes()
+        await self.migrate_drop_legacy_user_telegram_foreign_keys()
         await self.migrate_internal_test_accounts()
         await self.migrate_account_aware_schema()
         await self.migrate_owner_role()

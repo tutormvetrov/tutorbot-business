@@ -508,9 +508,25 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
     user_id = callback_query.from_user.id
     state_data = await state.get_data()
     account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
+    student_user_id = None
+    if hasattr(db, "get_user_row_id"):
+        student_user_id = await db.get_user_row_id(user_id)
 
     async with db.pool.acquire() as conn:
-        if account_id is not None:
+        if account_id is not None and student_user_id is not None:
+            active = await conn.fetch(
+                """
+                SELECT id
+                FROM lessons
+                WHERE (student_user_id = $3 OR (student_user_id IS NULL AND student_id = $1))
+                  AND account_id = $2
+                  AND status = 'active'
+                """,
+                user_id,
+                account_id,
+                student_user_id,
+            )
+        elif account_id is not None:
             active = await conn.fetch(
                 """
                 SELECT id
@@ -540,7 +556,23 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
             await callback_query.answer()
             return
 
-        if account_id is not None:
+        if account_id is not None and student_user_id is not None:
+            await conn.execute(
+                """
+                UPDATE lessons
+                SET status = 'freeze_pending',
+                    freeze_reason = $1,
+                    freeze_start_date = CURRENT_TIMESTAMP
+                WHERE (student_user_id = $4 OR (student_user_id IS NULL AND student_id = $2))
+                  AND account_id = $3
+                  AND status = 'active'
+                """,
+                reason,
+                user_id,
+                account_id,
+                student_user_id,
+            )
+        elif account_id is not None:
             await conn.execute(
                 """
                 UPDATE lessons
@@ -609,7 +641,19 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
     user_id = callback_query.from_user.id
     hw_id = int(callback_query.data.split(':')[1])
     hw = await db.get_homework_by_id(hw_id)
-    if not hw or hw['student_id'] != user_id or hw['status'] != 'active':
+    student_user_id = None
+    if hasattr(db, "get_user_row_id"):
+        student_user_id = await db.get_user_row_id(user_id)
+    matches_current_student = bool(
+        hw and (
+            hw.get("student_id") == user_id
+            or (
+                student_user_id is not None
+                and hw.get("student_user_id") == student_user_id
+            )
+        )
+    )
+    if not hw or hw["status"] != "active" or not matches_current_student:
         await callback_query.message.edit_text(
             "ℹ️ Задание не найдено или уже отмечено как выполненное.",
             reply_markup=back_to_menu_keyboard,
@@ -643,6 +687,9 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
     if not user or user["role"] != "student":
         await callback_query.answer("Доступно только ученикам.", show_alert=True)
         return
+    student_user_id = user.get("id")
+    if student_user_id is None and hasattr(db, "get_user_row_id"):
+        student_user_id = await db.get_user_row_id(callback_query.from_user.id)
 
     parts = callback_query.data.split(':')
     if len(parts) != 3 or parts[1] not in LESSON_PRESENCE_LABELS:
@@ -665,7 +712,16 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
             )
         else:
             lesson = await conn.fetchrow("SELECT * FROM lessons WHERE id = $1", lesson_id)
-    if not lesson or lesson["student_id"] != callback_query.from_user.id:
+    lesson_belongs_to_student = bool(
+        lesson and (
+            lesson.get("student_id") == callback_query.from_user.id
+            or (
+                student_user_id is not None
+                and lesson.get("student_user_id") == student_user_id
+            )
+        )
+    )
+    if not lesson_belongs_to_student:
         await callback_query.answer("Этот урок недоступен.", show_alert=True)
         return
 

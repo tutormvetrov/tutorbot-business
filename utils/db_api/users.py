@@ -468,7 +468,7 @@ class DatabaseUserMixin:
                 MIN(l.lesson_date) AS first_lesson
             FROM users u
             JOIN lessons l
-              ON l.student_id = u.telegram_id
+              ON (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
              AND l.account_id = $1
             WHERE u.account_id = $1
               AND u.role = 'student'
@@ -503,7 +503,7 @@ class DatabaseUserMixin:
                 COALESCE(SUM(p.lessons_remaining), 0)::int AS lesson_balance
             FROM users u
             LEFT JOIN payments p
-              ON p.student_id = u.telegram_id
+              ON (p.student_user_id = u.id OR (p.student_user_id IS NULL AND p.student_id = u.telegram_id))
              AND p.account_id = $1
              AND p.status = 'confirmed'
             WHERE u.account_id = $1

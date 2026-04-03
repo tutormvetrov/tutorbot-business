@@ -80,9 +80,8 @@ async def _register_admin(message: Message, db: Database):
             """
             INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
             VALUES ($1, $2, $3, $4, $5, 'owner')
-            ON CONFLICT (telegram_id) DO UPDATE
-            SET account_id = EXCLUDED.account_id,
-                identity_id = EXCLUDED.identity_id,
+            ON CONFLICT (account_id, telegram_id) DO UPDATE
+            SET identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = 'owner',
@@ -298,9 +297,8 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
             """
             INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, age, language, level, is_internal_account)
             VALUES ($1, $2, $3, $4, $5, 'student', $6, $7, $8, $9)
-            ON CONFLICT (telegram_id) DO UPDATE
-            SET account_id = EXCLUDED.account_id,
-                identity_id = EXCLUDED.identity_id,
+            ON CONFLICT (account_id, telegram_id) DO UPDATE
+            SET identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
@@ -400,9 +398,8 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
             """
             INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role, is_internal_account)
             VALUES ($1, $2, $3, $4, $5, 'parent', $6)
-            ON CONFLICT (telegram_id) DO UPDATE
-            SET account_id = EXCLUDED.account_id,
-                identity_id = EXCLUDED.identity_id,
+            ON CONFLICT (account_id, telegram_id) DO UPDATE
+            SET identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,

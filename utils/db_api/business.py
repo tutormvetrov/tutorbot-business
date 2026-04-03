@@ -335,9 +335,8 @@ class DatabaseBusinessMixin:
             """
             INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (telegram_id) DO UPDATE
-            SET account_id = EXCLUDED.account_id,
-                identity_id = EXCLUDED.identity_id,
+            ON CONFLICT (account_id, telegram_id) DO UPDATE
+            SET identity_id = EXCLUDED.identity_id,
                 full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
@@ -654,9 +653,8 @@ class DatabaseBusinessMixin:
                     """
                     INSERT INTO users (account_id, identity_id, telegram_id, full_name, username, role)
                     VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (telegram_id) DO UPDATE
-                    SET account_id = EXCLUDED.account_id,
-                        identity_id = EXCLUDED.identity_id,
+                    ON CONFLICT (account_id, telegram_id) DO UPDATE
+                    SET identity_id = EXCLUDED.identity_id,
                         full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), users.full_name),
                         username = COALESCE(NULLIF(EXCLUDED.username, ''), users.username),
                         role = EXCLUDED.role,
@@ -1100,7 +1098,7 @@ class DatabaseBusinessMixin:
                     COALESCE(u.speech_style, 'formal') AS speech_style
                 FROM users u
                 LEFT JOIN payments p
-                  ON p.student_id = u.telegram_id
+                  ON (p.student_user_id = u.id OR (p.student_user_id IS NULL AND p.student_id = u.telegram_id))
                  AND p.status = 'confirmed'
                  AND p.account_id = $1
                 WHERE u.account_id = $1
@@ -1129,7 +1127,7 @@ class DatabaseBusinessMixin:
                   AND NOT EXISTS (
                       SELECT 1
                       FROM lessons l
-                      WHERE l.student_id = u.telegram_id
+                      WHERE (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                         AND l.account_id = $1
                         AND l.status = 'active'
                         AND l.lesson_date IS NOT NULL
@@ -1149,7 +1147,7 @@ class DatabaseBusinessMixin:
                     COALESCE(u.speech_style, 'formal') AS speech_style
                 FROM users u
                 JOIN student_parent sp
-                  ON sp.student_id = u.telegram_id
+                  ON (sp.student_user_id = u.id OR (sp.student_user_id IS NULL AND sp.student_id = u.telegram_id))
                  AND sp.account_id = $1
                  AND sp.is_active = true
                 WHERE u.account_id = $1
@@ -1219,7 +1217,7 @@ class DatabaseBusinessMixin:
                           SELECT 1
                           FROM lessons l
                           WHERE l.account_id = $1
-                            AND l.student_id = u.telegram_id
+                            AND (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                             AND l.status = 'active'
                             AND l.lesson_date >= NOW()
                       )

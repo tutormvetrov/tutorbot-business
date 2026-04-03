@@ -23,6 +23,7 @@ from handlers.users.admin_sections.students import (
 from handlers.users.callbacks import (
     cancel_fsm,
     process_homework,
+    process_homework_done,
     process_homework_list,
     process_lesson_presence,
     process_notif_action,
@@ -130,6 +131,40 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Выполненные задания", message.edits[-1])
         self.assertIn("Сделано", message.edits[-1])
 
+    async def test_homework_done_accepts_surrogate_student_match(self):
+        class FakeDB:
+            def __init__(self):
+                self.marked = []
+
+            async def get_homework_by_id(self, hw_id):
+                return {
+                    "id": hw_id,
+                    "student_id": 9999,
+                    "student_user_id": 44,
+                    "status": "active",
+                    "title": "Суррогатное ДЗ",
+                }
+
+            async def get_user_row_id(self, telegram_id):
+                return 44 if telegram_id == 777 else None
+
+            async def mark_homework_done(self, hw_id, student_id):
+                self.marked.append((hw_id, student_id))
+
+            async def get_user(self, telegram_id):
+                return {"id": 44, "full_name": "Иван Петров", "role": "student"}
+
+            async def get_student_homework(self, user_id, status):
+                return []
+
+        message = DummyMessage(user_id=777, full_name="Иван Петров")
+        callback = DummyCallbackQuery("hw_done:7", message=message, user_id=777, full_name="Иван Петров")
+
+        await process_homework_done(callback, FakeDB())
+
+        self.assertIn("Активные задания", message.edits[-1])
+        self.assertEqual(callback.answers[-1].text, "Отметил как выполненное.")
+
 
 class LessonPresenceFlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_lesson_presence_callback_reports_to_admin(self):
@@ -142,6 +177,33 @@ class LessonPresenceFlowTest(unittest.IsolatedAsyncioTestCase):
 
             async def get_user(self, telegram_id):
                 return {"full_name": "Иван Петров", "role": "student"}
+
+        bot = DummyBot()
+        message = DummyMessage(user_id=1001, full_name="Иван Петров", bot=bot)
+        callback = DummyCallbackQuery(
+            "lesson_presence:on_time:9",
+            message=message,
+            user_id=1001,
+            full_name="Иван Петров",
+            bot=bot,
+        )
+
+        await process_lesson_presence(callback, FakeDB())
+
+        self.assertTrue(message.reply_markups)
+        self.assertTrue(bot.sent_messages)
+        self.assertIn("Буду вовремя", bot.sent_messages[0].text)
+
+    async def test_lesson_presence_accepts_surrogate_student_match(self):
+        lesson = {"id": 9, "student_id": 9999, "student_user_id": 44, "lesson_date": None}
+        conn = DummyConn(fetchrow_result=lesson)
+
+        class FakeDB:
+            def __init__(self):
+                self.pool = DummyPool(conn)
+
+            async def get_user(self, telegram_id):
+                return {"id": 44, "full_name": "Иван Петров", "role": "student"}
 
         bot = DummyBot()
         message = DummyMessage(user_id=1001, full_name="Иван Петров", bot=bot)
