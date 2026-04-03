@@ -28,7 +28,7 @@ POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("TUTORBOT_DATA_DIR", PROJECT_ROOT / "data"))
 FSM_STORAGE_FILE = Path(os.getenv("FSM_STORAGE_FILE", DATA_DIR / "fsm_storage.json"))
-SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot-business")
+SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot")
 
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
 GOOGLE_CREDENTIALS_FILE = os.getenv(
@@ -66,7 +66,7 @@ def load_product_config() -> dict:
 
 
 def get_product_name() -> str:
-    return load_product_config().get("product_name", "Tutorbot Business")
+    return load_product_config().get("product_name", "TutorScalebot")
 
 
 def normalize_person_name(value: str) -> str:

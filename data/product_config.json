@@ -1,8 +1,8 @@
 {
-  "product_name": "Tutorbot Business",
+  "product_name": "TutorScalebot",
   "tagline": "Telegram-бот для репетиторов и мини-школ",
   "support_contact": "support@example.com",
-  "public_website": "https://example.com/tutorbot-business",
+  "public_website": "https://t.me/TutorScalebot",
   "trial_days": 14,
   "trial_plan": "practice",
   "billing_policy": "Подписка активируется вручную администратором после подтверждения оплаты. Автоматического checkout и автопродления в v1 нет.",

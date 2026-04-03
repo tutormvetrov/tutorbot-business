@@ -25,7 +25,7 @@ def _locked_features_lines(snapshot: dict) -> list[str]:
 
 def build_product_hub_text(snapshot: dict | None, product: dict) -> str:
     lines = [
-        f"💼 <b>{html.quote(product.get('product_name', 'Tutorbot Business'))}</b>",
+        f"💼 <b>{html.quote(product.get('product_name', 'TutorScalebot'))}</b>",
         "",
         html.quote(product.get("tagline", "Telegram-бот для репетиторов и мини-школ")),
     ]
@@ -167,7 +167,7 @@ def build_billing_admin_text(snapshot: dict, product: dict) -> str:
 def build_owner_onboarding_text(snapshot: dict, product: dict) -> str:
     resolved = snapshot["resolved"]
     return "\n".join([
-        f"✅ Вы вошли в <b>{html.quote(product.get('product_name', 'Tutorbot Business'))}</b> как <b>owner</b>.",
+        f"✅ Вы вошли в <b>{html.quote(product.get('product_name', 'TutorScalebot'))}</b> как <b>owner</b>.",
         "",
         f"Сейчас для аккаунта активен <b>{html.quote(TRIAL_STATUS_LABELS.get(resolved.effective_status, resolved.effective_status))}</b>.",
         f"Доступ: <b>{html.quote(_plan_name(product, resolved.effective_plan_code))}</b> до <b>{html.quote(_format_datetime(resolved.trial_ends_at if resolved.is_trial_active else resolved.paid_until))}</b>.",

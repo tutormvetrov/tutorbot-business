@@ -1,7 +1,10 @@
-# Tutorbot Business
+# TutorScalebot
 
-`Tutorbot Business` — отдельный коммерческий Telegram-бот для репетиторов и мини-школ.
+`TutorScalebot` — отдельный коммерческий Telegram-бот для репетиторов и мини-школ.
 Ветка и репозиторий развиваются как самостоятельный продукт: с тарифами, trial, ручной активацией подписки, capability-gating и архитектурой, готовой к дальнейшему переходу от “один инстанс на клиента” к общему SaaS.
+
+Имя systemd unit и логическое имя сервиса теперь `tutorscalebot`.
+Текущий deploy-путь по умолчанию всё ещё указан как `/srv/tutorbot-business`, чтобы существующий сервер можно было не переезжать по файловой системе в тот же момент.
 
 ## Что уже есть
 
@@ -43,6 +46,7 @@ python3 -m venv .venv
 - `TUTORBOT_DATA_DIR` — директория для runtime-data, если нужно вынести её из репозитория.
 - `FSM_STORAGE_FILE` — путь к JSON storage для FSM.
 - `TUTORBOT_SERVICE_NAME` — имя systemd-сервиса для healthcheck/watch-скриптов.
+  По умолчанию: `tutorscalebot`.
 
 ## Структура проекта
 
@@ -67,8 +71,8 @@ BOT_TOKEN=12345:TESTTOKEN ADMIN_ID=1 .venv/bin/python -m unittest discover -s te
 
 В репозитории лежат серверные артефакты:
 
-- `deploy/tutorbot-business.service`
-- `deploy/logrotate/tutorbot-business`
+- `deploy/tutorscalebot.service`
+- `deploy/logrotate/tutorscalebot`
 - `scripts/healthcheck.sh`
 - `scripts/tutorbot_watch.py`
 
@@ -76,19 +80,27 @@ BOT_TOKEN=12345:TESTTOKEN ADMIN_ID=1 .venv/bin/python -m unittest discover -s te
 
 1. Разверните проект в `/srv/tutorbot-business`.
 2. Положите `.env` и credentials по нужным путям.
-3. Скопируйте `deploy/tutorbot-business.service` в `/etc/systemd/system/tutorbot-business.service`.
-4. Скопируйте `deploy/logrotate/tutorbot-business` в `/etc/logrotate.d/tutorbot-business`.
+3. Скопируйте `deploy/tutorscalebot.service` в `/etc/systemd/system/tutorscalebot.service`.
+4. Скопируйте `deploy/logrotate/tutorscalebot` в `/etc/logrotate.d/tutorscalebot`.
 5. Включите сервис:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now tutorbot-business
+sudo systemctl enable --now tutorscalebot
 ```
 
 Ручная проверка:
 
 ```bash
-TUTORBOT_ROOT=/srv/tutorbot-business TUTORBOT_SERVICE_NAME=tutorbot-business ./scripts/healthcheck.sh
+TUTORBOT_ROOT=/srv/tutorbot-business TUTORBOT_SERVICE_NAME=tutorscalebot ./scripts/healthcheck.sh
+```
+
+Если вы мигрируете с прежнего unit `tutorbot-business`, обновите `TUTORBOT_SERVICE_NAME` в `.env`, установите новый unit `tutorscalebot.service`, затем переключите systemd:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl disable --now tutorbot-business || true
+sudo systemctl enable --now tutorscalebot
 ```
 
 ## Примечание по v1

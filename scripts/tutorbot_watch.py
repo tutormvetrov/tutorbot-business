@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(os.getenv("TUTORBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
-SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot-business.service")
+SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot")
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",
@@ -97,7 +97,7 @@ def _restart_bot() -> bool:
 
 def main() -> int:
     previous = _build_snapshot()
-    print(f"tutorbot-watch: monitoring project files for changes in {ROOT}", flush=True)
+    print(f"tutorscalebot-watch: monitoring project files for changes in {ROOT}", flush=True)
 
     while True:
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -108,14 +108,14 @@ def main() -> int:
         time.sleep(SETTLE_SECONDS)
         settled = _build_snapshot()
         change_summary = _summarize_changes(previous, settled)
-        print(f"tutorbot-watch: restarting service after changes in {change_summary}", flush=True)
+        print(f"tutorscalebot-watch: restarting service after changes in {change_summary}", flush=True)
 
         if _restart_bot():
             previous = settled
-            print(f"tutorbot-watch: {SERVICE_NAME} restarted successfully", flush=True)
+            print(f"tutorscalebot-watch: {SERVICE_NAME} restarted successfully", flush=True)
             continue
 
-        print(f"tutorbot-watch: failed to restart {SERVICE_NAME}", file=sys.stderr, flush=True)
+        print(f"tutorscalebot-watch: failed to restart {SERVICE_NAME}", file=sys.stderr, flush=True)
         previous = settled
 
 

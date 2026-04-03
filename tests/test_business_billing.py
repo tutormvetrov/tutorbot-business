@@ -162,7 +162,7 @@ class WorkspaceStageFourTest(unittest.TestCase):
             }
         )
         product = {
-            "product_name": "Tutorbot Business",
+            "product_name": "TutorScalebot",
             "support_contact": "support@example.com",
             "plans": {
                 "practice": {"display_name": "Practice"},

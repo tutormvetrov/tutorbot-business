@@ -2,7 +2,7 @@
 
 ## Goal
 
-Подготовить `Tutorbot Business` к режиму общего SaaS-бота, где один Telegram-пользователь может состоять в нескольких workspace, не ломая текущие account-aware потоки.
+Подготовить `TutorScalebot` к режиму общего SaaS-бота, где один Telegram-пользователь может состоять в нескольких workspace, не ломая текущие account-aware потоки.
 
 ## Current Transitional State
 

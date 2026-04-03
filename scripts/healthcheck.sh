@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="${TUTORBOT_ROOT:-/srv/tutorbot-business}"
-SERVICE_NAME="${TUTORBOT_SERVICE_NAME:-tutorbot-business}"
+SERVICE_NAME="${TUTORBOT_SERVICE_NAME:-tutorscalebot}"
 BOT_CMD="$ROOT/.venv/bin/python $ROOT/app.py"
 OPS_STATUS="$ROOT/data/ops_status.json"
 RUNTIME_METRICS="$ROOT/data/runtime_metrics.jsonl"

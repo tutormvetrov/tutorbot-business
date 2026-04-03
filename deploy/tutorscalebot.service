@@ -1,5 +1,5 @@
 [Unit]
-Description=Tutorbot Business Telegram bot
+Description=TutorScalebot Telegram bot
 After=network.target postgresql.service
 Wants=postgresql.service
 
@@ -17,7 +17,7 @@ StandardOutput=append:/srv/tutorbot-business/bot.log
 StandardError=append:/srv/tutorbot-business/bot.log
 Environment=PYTHONUNBUFFERED=1
 Environment=TUTORBOT_ROOT=/srv/tutorbot-business
-Environment=TUTORBOT_SERVICE_NAME=tutorbot-business
+Environment=TUTORBOT_SERVICE_NAME=tutorscalebot
 
 [Install]
 WantedBy=multi-user.target
