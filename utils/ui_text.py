@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from aiogram import html
 
+from data.config import get_product_name
 from utils.brand import (
     brand_tone_description,
     brand_tone_label,
@@ -13,6 +14,7 @@ from utils.brand import (
     get_brand_tone,
 )
 from utils.speech import speech_style_label
+from utils.workspace import workspace_role_label
 
 MAIN_MENU_TEXT = "Главное меню:"
 ACTION_CANCELLED_TEXT = "❌ Действие отменено."
@@ -38,7 +40,7 @@ ADMIN_COMMUNICATION_CATEGORY_TEXT = (
 )
 ADMIN_SERVICE_CATEGORY_TEXT = (
     "⚙️ <b>Сервис</b>\n\n"
-    "Calendar, диагностика, тональность и рабочие заметки."
+    "Calendar, диагностика, billing, инвайты, support и рабочие заметки."
 )
 ADMIN_SYNC_IN_PROGRESS_TEXT = "🔄 Синхронизирую Google Calendar..."
 ADMIN_SYNC_ERROR_HINT = (
@@ -231,9 +233,11 @@ def build_profile_text(
     next_lesson: datetime | None = None,
 ) -> str:
     role_labels = {
-        "student": "Ученик",
-        "parent": "Родитель",
-        "teacher_admin": "Преподаватель",
+        "student": workspace_role_label("student"),
+        "parent": workspace_role_label("parent"),
+        "owner": workspace_role_label("owner"),
+        "manager": workspace_role_label("manager"),
+        "assistant": workspace_role_label("assistant"),
     }
     reg_date = format_date(user.get("registration_date"))
     full_name = html.quote(user.get("full_name") or "—")
@@ -353,6 +357,7 @@ def build_contacts_text(info: dict, show_address: bool = False) -> str:
 
 def build_help_text() -> str:
     tone = get_brand_tone()
+    product_name = get_product_name()
     site_line = choose_tone_variant(
         "↗️ <b>Сайт и материалы</b> — тест уровня и основные материалы преподавателя",
         "↗️ <b>Сайт и материалы</b> — тест уровня, информация о занятиях и полезные материалы",
@@ -361,7 +366,7 @@ def build_help_text() -> str:
         tone=tone,
     )
     return (
-        "🤖 <b>Справка по TutorBot</b>\n\n"
+        f"🤖 <b>Справка по {html.quote(product_name)}</b>\n\n"
         "<b>Команды:</b>\n"
         "/start — начать работу / войти\n"
         "/menu — главное меню\n"
@@ -375,6 +380,7 @@ def build_help_text() -> str:
         "👤 <b>Профиль</b> — данные, напоминания и тест уровня\n"
         "📞 <b>Контакты</b> — связь, онлайн-занятия и очный адрес\n"
         "💳 <b>Реквизиты</b> — стоимость и способы оплаты\n"
+        "💼 <b>Продукт</b> — тарифы, подписка, trial и upgrade-путь\n"
         f"{site_line}"
     )
 

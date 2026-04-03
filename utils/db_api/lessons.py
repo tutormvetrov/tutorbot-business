@@ -3,6 +3,7 @@ from typing import Optional
 
 class DatabaseLessonMixin:
     async def get_lessons_for_reminder(self):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT
@@ -14,7 +15,9 @@ class DatabaseLessonMixin:
                 COALESCE(u.speech_style, 'formal') AS speech_style
             FROM lessons l
             JOIN users u ON u.telegram_id = l.student_id
+                       AND u.account_id = $1
             WHERE l.status = 'active'
+              AND l.account_id = $1
               AND l.reminder_sent = false
               AND (u.lesson_reminders = 'enabled'
                    OR u.lesson_reminders LIKE 'paused_until:%')
@@ -32,15 +35,21 @@ class DatabaseLessonMixin:
                   )
               )
             """,
+            account_id,
             fetch=True,
         )
 
     async def mark_lesson_reminder_sent(self, lesson_id: int):
+        account_id = self.require_account_id()
         await self.execute(
-            "UPDATE lessons SET reminder_sent=true WHERE id=$1", lesson_id, execute=True,
+            "UPDATE lessons SET reminder_sent=true WHERE id=$1 AND account_id = $2",
+            lesson_id,
+            account_id,
+            execute=True,
         )
 
     async def get_lessons_missing_homework(self):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             WITH next_lessons AS (
@@ -51,7 +60,9 @@ class DatabaseLessonMixin:
                     u.full_name
                 FROM lessons l
                 JOIN users u ON u.telegram_id = l.student_id
+                            AND u.account_id = $1
                 WHERE l.status = 'active'
+                  AND l.account_id = $1
                   AND l.lesson_date IS NOT NULL
                   AND l.homework_check_reminder_sent = false
                   AND l.lesson_date > NOW()
@@ -68,6 +79,7 @@ class DatabaseLessonMixin:
                 FROM next_lessons n
                 JOIN lessons l ON l.student_id = n.student_id
                 WHERE l.lesson_date IS NOT NULL
+                  AND l.account_id = $1
                   AND l.lesson_date < n.lesson_date
                   AND l.status IN ('active', 'completed')
                 GROUP BY n.id
@@ -84,68 +96,85 @@ class DatabaseLessonMixin:
                 SELECT 1
                 FROM homework h
                 WHERE h.student_id = n.student_id
+                  AND h.account_id = $1
                   AND h.created_at >= p.previous_lesson_date
                   AND h.created_at <= n.lesson_date
             )
             ORDER BY n.lesson_date ASC
             """,
+            account_id,
             fetch=True,
         )
 
     async def mark_homework_check_reminder_sent(self, lesson_id: int):
+        account_id = self.require_account_id()
         await self.execute(
-            "UPDATE lessons SET homework_check_reminder_sent = true WHERE id = $1",
+            "UPDATE lessons SET homework_check_reminder_sent = true WHERE id = $1 AND account_id = $2",
             lesson_id,
+            account_id,
             execute=True,
         )
 
     async def set_lesson_reminders(self, telegram_id: int, value: str):
+        account_id = self.require_account_id()
         await self.execute(
-            "UPDATE users SET lesson_reminders=$1 WHERE telegram_id=$2",
-            value, telegram_id, execute=True,
+            "UPDATE users SET lesson_reminders=$1 WHERE telegram_id=$2 AND account_id = $3",
+            value, telegram_id, account_id, execute=True,
         )
 
     async def set_lesson_format(self, telegram_id: int, value: str):
+        account_id = self.require_account_id()
         await self.execute(
-            "UPDATE users SET lesson_format=$1 WHERE telegram_id=$2",
-            value, telegram_id, execute=True,
+            "UPDATE users SET lesson_format=$1 WHERE telegram_id=$2 AND account_id = $3",
+            value, telegram_id, account_id, execute=True,
         )
 
     async def get_active_lessons(self, student_id: int):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT * FROM lessons
-            WHERE student_id = $1 AND status = 'active'
+            WHERE student_id = $1
+              AND account_id = $2
+              AND status = 'active'
             ORDER BY lesson_date ASC NULLS LAST, created_at DESC
             """,
-            student_id, fetch=True,
+            student_id, account_id, fetch=True,
         )
 
     async def get_pending_freeze_lessons(self):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT l.*, u.full_name, u.telegram_id AS user_telegram_id
             FROM lessons l
             JOIN users u ON u.telegram_id = l.student_id
+                        AND u.account_id = $1
             WHERE l.status = 'freeze_pending'
+              AND l.account_id = $1
             ORDER BY l.created_at ASC
             """,
+            account_id,
             fetch=True,
         )
 
     async def add_lesson(self, student_id: int, lesson_date, google_event_id: Optional[str] = None):
+        account_id = self.require_account_id()
         await self.execute(
             """
-            INSERT INTO lessons (student_id, lesson_date, google_event_id, status, source)
-            VALUES ($1, $2, $3, 'active', 'manual')
+            INSERT INTO lessons (account_id, student_id, lesson_date, google_event_id, status, source)
+            VALUES ($1, $2, $3, $4, 'active', 'manual')
             """,
-            student_id, lesson_date, google_event_id, execute=True,
+            account_id, student_id, lesson_date, google_event_id, execute=True,
         )
 
     async def upsert_lesson_from_calendar(self, student_id: int, google_event_id: str, lesson_date):
+        account_id = self.require_account_id()
         existing = await self.execute(
-            "SELECT id FROM lessons WHERE google_event_id = $1",
-            google_event_id, fetchrow=True,
+            "SELECT id FROM lessons WHERE google_event_id = $1 AND account_id = $2",
+            google_event_id,
+            account_id,
+            fetchrow=True,
         )
         if existing:
             await self.execute(
@@ -156,31 +185,35 @@ class DatabaseLessonMixin:
                     status = 'active',
                     source = 'calendar'
                 WHERE google_event_id = $1
+                  AND account_id = $4
                 """,
-                google_event_id, lesson_date, student_id, execute=True,
+                google_event_id, lesson_date, student_id, account_id, execute=True,
             )
             return "updated"
 
         await self.execute(
             """
-            INSERT INTO lessons (student_id, google_event_id, lesson_date, status, source)
-            VALUES ($1, $2, $3, 'active', 'calendar')
+            INSERT INTO lessons (account_id, student_id, google_event_id, lesson_date, status, source)
+            VALUES ($1, $2, $3, $4, 'active', 'calendar')
             """,
-            student_id, google_event_id, lesson_date, execute=True,
+            account_id, student_id, google_event_id, lesson_date, execute=True,
         )
         return "inserted"
 
     async def approve_freeze(self, lesson_id: int):
+        account_id = self.require_account_id()
         await self.execute(
             """
             UPDATE lessons
             SET status = 'frozen', freeze_start_date = CURRENT_TIMESTAMP
             WHERE id = $1
+              AND account_id = $2
             """,
-            lesson_id, execute=True,
+            lesson_id, account_id, execute=True,
         )
 
     async def reject_freeze(self, lesson_id: int):
+        account_id = self.require_account_id()
         await self.execute(
             """
             UPDATE lessons
@@ -188,35 +221,43 @@ class DatabaseLessonMixin:
                 freeze_reason = NULL,
                 freeze_start_date = NULL
             WHERE id = $1
+              AND account_id = $2
             """,
-            lesson_id, execute=True,
+            lesson_id, account_id, execute=True,
         )
 
     async def get_student_lesson_balance(self, student_id: int) -> int:
+        account_id = self.require_account_id()
         result = await self.execute(
             """
             SELECT COALESCE(SUM(lessons_remaining), 0)
             FROM payments
-            WHERE student_id = $1 AND status = 'confirmed'
+            WHERE student_id = $1
+              AND account_id = $2
+              AND status = 'confirmed'
             """,
-            student_id, fetchval=True,
+            student_id, account_id, fetchval=True,
         )
         return int(result) if result else 0
 
     async def get_past_unprocessed_lessons(self):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT l.id, l.student_id
             FROM lessons l
-            WHERE l.status = 'active'
+            WHERE l.account_id = $1
+              AND l.status = 'active'
               AND l.balance_consumed = false
               AND l.lesson_date IS NOT NULL
               AND l.lesson_date < NOW()
             """,
+            account_id,
             fetch=True,
         )
 
     async def complete_lesson(self, lesson_id: int, student_id: int):
+        account_id = self.require_account_id()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -224,19 +265,23 @@ class DatabaseLessonMixin:
                     UPDATE lessons
                     SET status = 'completed', balance_consumed = true
                     WHERE id = $1
+                      AND account_id = $2
                     """,
                     lesson_id,
+                    account_id,
                 )
                 payment = await conn.fetchrow(
                     """
                     SELECT id FROM payments
                     WHERE student_id = $1
+                      AND account_id = $2
                       AND status = 'confirmed'
                       AND lessons_remaining > 0
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
                     student_id,
+                    account_id,
                 )
                 if payment:
                     await conn.execute(
@@ -245,31 +290,41 @@ class DatabaseLessonMixin:
                     )
 
     async def delete_lesson(self, lesson_id: int):
+        account_id = self.require_account_id()
         await self.execute(
-            "DELETE FROM lessons WHERE id = $1", lesson_id, execute=True,
+            "DELETE FROM lessons WHERE id = $1 AND account_id = $2",
+            lesson_id,
+            account_id,
+            execute=True,
         )
 
     async def get_non_completed_lessons(self, student_id: int):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT * FROM lessons
-            WHERE student_id = $1 AND status != 'completed'
+            WHERE student_id = $1
+              AND account_id = $2
+              AND status != 'completed'
             ORDER BY lesson_date ASC NULLS LAST
             """,
-            student_id, fetch=True,
+            student_id, account_id, fetch=True,
         )
 
     async def get_lessons_in_window(self, start_dt, end_dt):
+        account_id = self.require_account_id()
         return await self.execute(
             """
             SELECT id, student_id, lesson_date, status
             FROM lessons
-            WHERE lesson_date IS NOT NULL
-              AND lesson_date >= $1
-              AND lesson_date < $2
+            WHERE account_id = $1
+              AND lesson_date IS NOT NULL
+              AND lesson_date >= $2
+              AND lesson_date < $3
               AND status IN ('active', 'completed', 'freeze_pending')
             ORDER BY lesson_date ASC
             """,
+            account_id,
             start_dt,
             end_dt,
             fetch=True,
@@ -278,23 +333,32 @@ class DatabaseLessonMixin:
     async def get_google_event_ids_in_window(self, days_ahead: int = 60) -> list:
         from datetime import datetime, timedelta
 
+        account_id = self.require_account_id()
         now = datetime.now()
         end = now + timedelta(days=days_ahead)
         rows = await self.execute(
             """
             SELECT google_event_id FROM lessons
-            WHERE status != 'completed'
+            WHERE account_id = $1
+              AND status != 'completed'
               AND source = 'calendar'
               AND google_event_id IS NOT NULL
-              AND lesson_date BETWEEN $1 AND $2
+              AND lesson_date BETWEEN $2 AND $3
             """,
-            now, end, fetch=True,
+            account_id, now, end, fetch=True,
         )
         return [r['google_event_id'] for r in rows]
 
     async def delete_lessons_by_event_ids(self, event_ids: list):
+        account_id = self.require_account_id()
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "DELETE FROM lessons WHERE source = 'calendar' AND google_event_id = ANY($1::text[])",
+                """
+                DELETE FROM lessons
+                WHERE account_id = $1
+                  AND source = 'calendar'
+                  AND google_event_id = ANY($2::text[])
+                """,
+                account_id,
                 event_ids,
             )

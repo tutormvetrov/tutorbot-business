@@ -1,4 +1,4 @@
-/srv/tutorbot/bot.log {
+/srv/tutorbot-business/bot.log {
     daily
     rotate 7
     missingok

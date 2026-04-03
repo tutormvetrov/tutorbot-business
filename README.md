@@ -1,79 +1,97 @@
-# TutorBot
+# Tutorbot Business
 
-Telegram-бот для управления учебным процессом: регистрация учеников и родителей, расписание, домашние задания, оплаты, напоминания и админ-панель.
+`Tutorbot Business` — отдельный коммерческий Telegram-бот для репетиторов и мини-школ.
+Ветка и репозиторий развиваются как самостоятельный продукт: с тарифами, trial, ручной активацией подписки, capability-gating и архитектурой, готовой к дальнейшему переходу от “один инстанс на клиента” к общему SaaS.
+
+## Что уже есть
+
+- product config c branding, trial policy и текстами тарифов
+- `accounts`, `account_users`, `subscriptions`, `plans`, feature overrides
+- account-aware schema для основных сущностей
+- тарифные экраны, экран подписки и экран trial / upgrade
+- ручной billing flow из админки
+- capability gating для premium-функций
+- groundwork под группы и analytics
 
 ## Быстрый старт
 
-1. Создайте и заполните `.env`.
-2. Укажите сервисный аккаунт Google Calendar через `GOOGLE_CREDENTIALS_FILE`.
-3. Заполните `data/teacher_info.json` своими контактами, ссылками и реквизитами.
-4. Установите зависимости:
+1. Скопируйте `.env.example` в `.env`.
+2. Заполните переменные окружения.
+3. Настройте customer-facing файлы:
+   `data/product_config.json` — название продукта, support, trial и тарифные тексты.
+   `data/teacher_info.json` — контакты, ссылки, реквизиты и ссылки на календарь.
+4. Создайте виртуальное окружение и установите зависимости:
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 5. Запустите бота:
 
 ```bash
-python app.py
+.venv/bin/python app.py
 ```
 
 ## Переменные окружения
 
-- `BOT_TOKEN` - токен Telegram-бота.
-- `ADMIN_ID` - Telegram ID администратора.
-- `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT` - параметры PostgreSQL.
-- `GOOGLE_CALENDAR_ID` - ID календаря для синхронизации.
-- `GOOGLE_CREDENTIALS_FILE` - путь к JSON credentials service account.
+- `BOT_TOKEN` — токен Telegram-бота.
+- `ADMIN_ID` — Telegram ID owner/product-admin в текущем v1-инстансе.
+- `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT` — PostgreSQL.
+- `GOOGLE_CALENDAR_ID` — календарь для sync.
+- `GOOGLE_CREDENTIALS_FILE` — путь к service account JSON.
+- `TUTORBOT_DATA_DIR` — директория для runtime-data, если нужно вынести её из репозитория.
+- `FSM_STORAGE_FILE` — путь к JSON storage для FSM.
+- `TUTORBOT_SERVICE_NAME` — имя systemd-сервиса для healthcheck/watch-скриптов.
 
 ## Структура проекта
 
-- `app.py` - точка входа и запуск планировщика.
-- `handlers/` - обработчики сообщений и callback.
-- `keyboards/` - inline-клавиатуры.
-- `utils/` - работа с БД, календарём, текстом и scheduler.
-- `data/` - конфигурация и вспомогательные JSON-файлы.
+- `app.py` — точка входа, middleware и scheduler.
+- `handlers/` — user/admin/product flows.
+- `keyboards/` — inline keyboards, включая product/billing UI.
+- `utils/db_api/` — schema, query mixins и business-layer для account/subscription logic.
+- `utils/capabilities.py` — capability matrix и resolver по тарифам.
+- `utils/product_ui.py` — product-facing и billing-facing тексты.
+- `data/product_config.json` — branding и тарифные тексты.
+- `data/teacher_info.json` — контакты и реквизиты.
 
-## Проверка
+## Тесты
 
-Для базовой проверки можно запустить:
+Локальный прогон:
 
 ```bash
-python -m unittest discover -s tests
+BOT_TOKEN=12345:TESTTOKEN ADMIN_ID=1 .venv/bin/python -m unittest discover -s tests -q
 ```
 
 ## Deploy
 
-В репозитории лежат готовые артефакты для сервера:
+В репозитории лежат серверные артефакты:
 
-- `deploy/tutorbot.service` - unit для `systemd`
-- `deploy/logrotate/tutorbot` - конфиг ротации логов
-- `scripts/healthcheck.sh` - проверка живости бота и свежести ops status
-- `.env.example` - шаблон переменных окружения
+- `deploy/tutorbot-business.service`
+- `deploy/logrotate/tutorbot-business`
+- `scripts/healthcheck.sh`
+- `scripts/tutorbot_watch.py`
 
 Рекомендуемый порядок:
 
-1. Скопируйте `.env.example` в `.env` и заполните значения.
-2. Поместите Google credentials в путь из `GOOGLE_CREDENTIALS_FILE`.
-3. Скопируйте `deploy/tutorbot.service` в `/etc/systemd/system/tutorbot.service`.
-4. Скопируйте `deploy/logrotate/tutorbot` в `/etc/logrotate.d/tutorbot`.
+1. Разверните проект в `/srv/tutorbot-business`.
+2. Положите `.env` и credentials по нужным путям.
+3. Скопируйте `deploy/tutorbot-business.service` в `/etc/systemd/system/tutorbot-business.service`.
+4. Скопируйте `deploy/logrotate/tutorbot-business` в `/etc/logrotate.d/tutorbot-business`.
 5. Включите сервис:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now tutorbot
+sudo systemctl enable --now tutorbot-business
 ```
 
-Проверку состояния можно запускать вручную:
+Ручная проверка:
 
 ```bash
-TUTORBOT_ROOT=/srv/tutorbot ./scripts/healthcheck.sh
+TUTORBOT_ROOT=/srv/tutorbot-business TUTORBOT_SERVICE_NAME=tutorbot-business ./scripts/healthcheck.sh
 ```
 
-Healthcheck проверяет:
+## Примечание по v1
 
-- запущен ли процесс бота или сервис `tutorbot`
-- свежий ли `data/ops_status.json`
-- не истекло ли время последнего обновления ops status
-- не пуст ли `data/runtime_metrics.jsonl`, если файл уже создан
+Billing в первой версии намеренно ручной: без checkout, без автопродления и без Stars.
+Сильное ядро продукта продаётся через тарифы, trial, paywall и ручную активацию плана из админки.

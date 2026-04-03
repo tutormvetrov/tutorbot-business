@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,13 +25,20 @@ PGPORT = str(os.getenv("PGPORT"))
 
 POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}"
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = Path(os.getenv("TUTORBOT_DATA_DIR", PROJECT_ROOT / "data"))
+FSM_STORAGE_FILE = Path(os.getenv("FSM_STORAGE_FILE", DATA_DIR / "fsm_storage.json"))
+SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot-business")
+
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
 GOOGLE_CREDENTIALS_FILE = os.getenv(
     "GOOGLE_CREDENTIALS_FILE",
     "/home/deploy/.secrets/tutorbot/credentials.json",
 )
 
-_TEACHER_INFO_PATH = os.path.join(os.path.dirname(__file__), "teacher_info.json")
+_CONFIG_DIR = Path(__file__).resolve().parent
+_TEACHER_INFO_PATH = _CONFIG_DIR / "teacher_info.json"
+_PRODUCT_CONFIG_PATH = _CONFIG_DIR / "product_config.json"
 
 
 def load_teacher_info() -> dict:
@@ -38,12 +46,27 @@ def load_teacher_info() -> dict:
     Read on every call so edits take effect without restarting the bot.
     """
     try:
-        with open(_TEACHER_INFO_PATH, encoding="utf-8") as f:
+        with _TEACHER_INFO_PATH.open(encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
         return {}
+
+
+def load_product_config() -> dict:
+    """Load product-facing branding, trial policy and plan copy."""
+    try:
+        with _PRODUCT_CONFIG_PATH.open(encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_product_name() -> str:
+    return load_product_config().get("product_name", "Tutorbot Business")
 
 
 def normalize_person_name(value: str) -> str:

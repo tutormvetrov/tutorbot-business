@@ -3,6 +3,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
+from aiogram.filters import CommandObject
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
@@ -16,6 +17,7 @@ from loader import bot, dp
 from utils.db_api.postgresql import Database
 from utils.observability import update_ops_status, write_runtime_event
 from utils.ui_text import DEACTIVATED_ACCOUNT_TEXT
+from utils.workspace import extract_invite_token, extract_start_payload
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +31,18 @@ class DatabaseMiddleware(BaseMiddleware):
     def __init__(self, db: Database):
         self.db = db
 
+    @staticmethod
+    def _extract_invite_token(event: TelegramObject, data: dict[str, Any]) -> str | None:
+        if isinstance(event, Message):
+            payload = ""
+            command = data.get("command")
+            if isinstance(command, CommandObject):
+                payload = command.args or ""
+            if not payload:
+                payload = extract_start_payload(getattr(event, "text", ""))
+            return extract_invite_token(payload)
+        return None
+
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
@@ -39,10 +53,21 @@ class DatabaseMiddleware(BaseMiddleware):
 
         user = getattr(event, "from_user", None)
         user_id = getattr(user, "id", None)
+        invite_token = self._extract_invite_token(event, data)
+        resolved_context = await self.db.resolve_account_context(user_id, invite_token=invite_token)
+        account = resolved_context.get("account")
+        account_user = resolved_context.get("account_user")
+        context_token = self.db.push_account_context(account["id"] if account else self.db.account_id)
 
-        if user_id and user_id != config.ADMIN_ID:
-            db_user = await self.db.get_user(user_id)
-            if db_user and db_user["is_active"] is False:
+        try:
+            data["account"] = account
+            data["account_user"] = account_user
+            data["account_invite"] = resolved_context.get("invite")
+
+            db_user = await self.db.get_user(user_id) if user_id else None
+            data["db_user"] = db_user
+
+            if user_id and user_id != config.ADMIN_ID and db_user and db_user["is_active"] is False:
                 if isinstance(event, CallbackQuery):
                     try:
                         await event.answer("Аккаунт деактивирован.", show_alert=True)
@@ -57,21 +82,23 @@ class DatabaseMiddleware(BaseMiddleware):
                     await event.answer(DEACTIVATED_ACCOUNT_TEXT)
                 return None
 
-        try:
-            return await handler(event, data)
-        except Exception as exc:
-            logger.exception("Unhandled update error for %s: %s", type(event).__name__, exc)
-            if isinstance(event, CallbackQuery):
-                try:
-                    await event.answer("⚠️ Внутренняя ошибка. Попробуйте ещё раз.", show_alert=True)
-                except Exception as answer_exc:
-                    logger.warning("Не удалось закрыть callback после ошибки: %s", answer_exc)
-            elif isinstance(event, Message):
-                try:
-                    await event.answer("⚠️ Внутренняя ошибка. Попробуйте ещё раз.")
-                except Exception as answer_exc:
-                    logger.warning("Не удалось отправить сообщение об ошибке: %s", answer_exc)
-            return None
+            try:
+                return await handler(event, data)
+            except Exception as exc:
+                logger.exception("Unhandled update error for %s: %s", type(event).__name__, exc)
+                if isinstance(event, CallbackQuery):
+                    try:
+                        await event.answer("⚠️ Внутренняя ошибка. Попробуйте ещё раз.", show_alert=True)
+                    except Exception as answer_exc:
+                        logger.warning("Не удалось закрыть callback после ошибки: %s", answer_exc)
+                elif isinstance(event, Message):
+                    try:
+                        await event.answer("⚠️ Внутренняя ошибка. Попробуйте ещё раз.")
+                    except Exception as answer_exc:
+                        logger.warning("Не удалось отправить сообщение об ошибке: %s", answer_exc)
+                return None
+        finally:
+            self.db.reset_account_context(context_token)
 
 async def main():
     import handlers  # noqa: F401 — регистрация роутеров

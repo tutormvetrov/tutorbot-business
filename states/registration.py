@@ -65,3 +65,8 @@ class StudentReply(StatesGroup):
 class AdminCalendarAliases(StatesGroup):
     waiting_for_student = State()
     waiting_for_aliases = State()
+
+
+class AdminGroups(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_student = State()

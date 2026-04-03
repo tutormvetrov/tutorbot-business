@@ -1,1 +1,1 @@
-from . import start, menu, callbacks, admin
+from . import start, menu, callbacks, admin, product

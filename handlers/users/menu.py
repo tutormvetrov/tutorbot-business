@@ -4,7 +4,13 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from keyboards.inline import main_keyboard, back_to_menu_keyboard, profile_keyboard, parent_profile_keyboard
+from data import config
+from keyboards.inline import (
+    back_to_menu_keyboard,
+    get_main_menu_keyboard,
+    profile_keyboard,
+    parent_profile_keyboard,
+)
 from utils.db_api.postgresql import Database
 from utils.ui_text import MAIN_MENU_TEXT, build_help_text, build_profile_text
 
@@ -13,9 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 @router.message(Command("menu"))
-async def command_menu(message: Message):
+async def command_menu(message: Message, db: Database):
     logger.info(f"Команда /menu от {message.from_user.id}")
-    await message.answer(MAIN_MENU_TEXT, reply_markup=main_keyboard)
+    user = await db.get_user(message.from_user.id)
+    role = user.get("role") if user else None
+    await message.answer(
+        MAIN_MENU_TEXT,
+        reply_markup=get_main_menu_keyboard(role, is_platform_admin=message.from_user.id == config.ADMIN_ID),
+    )
 
 
 @router.message(Command("help"))

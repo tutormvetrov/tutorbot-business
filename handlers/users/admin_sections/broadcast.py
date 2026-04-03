@@ -9,6 +9,7 @@ from keyboards.inline import (
     broadcast_preview_keyboard,
     cancel_fsm_keyboard,
     make_back_button_keyboard,
+    make_paywall_keyboard,
     make_recipient_select_keyboard,
     make_reschedule_offer_keyboard,
     make_teacher_reply_keyboard,
@@ -16,6 +17,8 @@ from keyboards.inline import (
 from utils.scheduler import build_reschedule_slot_payloads
 from states.registration import AdminBroadcast
 from utils.db_api.postgresql import Database
+from utils.capabilities import capability_label
+from utils.product_ui import build_paywall_text
 from utils.ui_text import (
     ADMIN_BROADCAST_EDIT_TEXT,
     ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT,
@@ -86,6 +89,7 @@ def _resolve_broadcast_text(kind: str | None, speech_style: str | None, fallback
 
 async def _enter_recipient_select(target, state: FSMContext, db: Database, broadcast_preview: str):
     students = await db.get_all_students()
+    segments_enabled = await db.has_capability("segmented_broadcasts") if hasattr(db, "has_capability") else False
     if not students:
         msg = ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT
         back_kb = make_back_button_keyboard("◀️ К коммуникациям", "admin:cat:communication")
@@ -106,12 +110,16 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
         }
         for student in students
     ]
-    await state.update_data(recipient_ids=all_ids, students_cache=cache)
+    await state.update_data(
+        recipient_ids=all_ids,
+        students_cache=cache,
+        segment_mode_enabled=segments_enabled,
+    )
     await state.set_state(AdminBroadcast.waiting_for_recipients)
 
     total = len(all_ids)
     text = admin_broadcast_recipients_text(broadcast_preview, total, total)
-    kb = make_recipient_select_keyboard(cache, set(all_ids))
+    kb = make_recipient_select_keyboard(cache, set(all_ids), segments_enabled=segments_enabled)
     if hasattr(target, 'message'):
         await target.message.edit_text(text, reply_markup=kb)
         await target.answer()
@@ -130,8 +138,16 @@ async def _show_broadcast_preview(target, state: FSMContext, broadcast_preview: 
 
 
 @router.callback_query(lambda c: c.data == 'admin:broadcast')
-async def admin_broadcast_start(callback_query: types.CallbackQuery):
+async def admin_broadcast_start(callback_query: types.CallbackQuery, db: Database | None = None):
     if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    if db is not None and hasattr(db, "has_capability") and not await db.has_capability("segmented_broadcasts"):
+        snapshot = await db.get_account_billing_snapshot()
+        await callback_query.message.edit_text(
+            build_paywall_text(capability_label("segmented_broadcasts"), snapshot, snapshot["product"]),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:communication", show_billing=True),
+        )
         await callback_query.answer()
         return
     await callback_query.message.edit_text(
@@ -261,7 +277,14 @@ async def bc_toggle_recipient(callback_query: types.CallbackQuery, state: FSMCon
     students = data.get('students_cache', [])
     broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text', '')
     text = admin_broadcast_recipients_text(broadcast_preview, len(selected), len(students))
-    await callback_query.message.edit_text(text, reply_markup=make_recipient_select_keyboard(students, selected))
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=make_recipient_select_keyboard(
+            students,
+            selected,
+            segments_enabled=bool(data.get("segment_mode_enabled")),
+        ),
+    )
     await callback_query.answer()
 
 
@@ -281,8 +304,43 @@ async def bc_select_all_none(callback_query: types.CallbackQuery, state: FSMCont
 
     broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text', '')
     text = admin_broadcast_recipients_text(broadcast_preview, len(selected), len(students))
-    await callback_query.message.edit_text(text, reply_markup=make_recipient_select_keyboard(students, selected))
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=make_recipient_select_keyboard(
+            students,
+            selected,
+            segments_enabled=bool(data.get("segment_mode_enabled")),
+        ),
+    )
     await callback_query.answer()
+
+
+@router.callback_query(
+    lambda c: c.data.startswith('bc_segment:'),
+    StateFilter(AdminBroadcast.waiting_for_recipients),
+)
+async def bc_segment_select(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    segment = callback_query.data.split(':', 1)[1]
+    students = await db.get_broadcast_segment_students(segment)
+    selected = {student["telegram_id"] for student in students}
+    data = await state.get_data()
+    cache = data.get("students_cache", [])
+    await state.update_data(recipient_ids=list(selected))
+    broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text', '')
+    text = admin_broadcast_recipients_text(broadcast_preview, len(selected), len(cache))
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=make_recipient_select_keyboard(
+            cache,
+            selected,
+            segments_enabled=bool(data.get("segment_mode_enabled")),
+        ),
+    )
+    await callback_query.answer("Сегмент выбран.")
 
 
 @router.callback_query(lambda c: c.data == 'noop')
@@ -313,7 +371,10 @@ async def bc_send(callback_query: types.CallbackQuery, state: FSMContext, db: Da
     }
     reschedule_slots = (
         await build_reschedule_slot_payloads(db)
-        if db is not None and broadcast_kind in {"illness", "force_majeure"}
+        if db is not None
+        and broadcast_kind in {"illness", "force_majeure"}
+        and hasattr(db, "has_capability")
+        and await db.has_capability("smart_reschedule")
         else []
     )
     await state.clear()

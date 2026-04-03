@@ -8,7 +8,7 @@ from data import config
 from data.config import load_teacher_info
 from handlers.users.admin_sections.common import restore_admin_view
 from keyboards.inline import (
-    main_keyboard, freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
+    freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
     cancel_fsm_keyboard, make_freeze_confirm_keyboard, FREEZE_REASON_LABELS,
     payment_keyboard, make_homework_filter_keyboard,
     make_homework_list_keyboard, make_contacts_keyboard,
@@ -16,6 +16,7 @@ from keyboards.inline import (
     parent_profile_keyboard,
     make_level_test_link_keyboard, make_self_delete_confirm_keyboard,
     make_teacher_reply_keyboard, make_write_to_student_keyboard, make_back_button_keyboard,
+    get_main_menu_keyboard,
 )
 from states.registration import FreezeConfirm, StudentReply
 from utils.db_api.postgresql import Database
@@ -67,9 +68,14 @@ def _build_self_delete_warning(user, snapshot: dict) -> str:
 # ─── Global navigation ────────────────────────────────────────────────────────
 
 @router.callback_query(lambda c: c.data == 'back_to_menu', StateFilter('*'))
-async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext):
+async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
-    await callback_query.message.edit_text(MAIN_MENU_TEXT, reply_markup=main_keyboard)
+    user = await db.get_user(callback_query.from_user.id)
+    role = user.get("role") if user else None
+    await callback_query.message.edit_text(
+        MAIN_MENU_TEXT,
+        reply_markup=get_main_menu_keyboard(role, is_platform_admin=callback_query.from_user.id == config.ADMIN_ID),
+    )
     await callback_query.answer()
 
 
@@ -501,11 +507,26 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
     reason = callback_query.data.split(':', 1)[1]
     user_id = callback_query.from_user.id
     state_data = await state.get_data()
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
 
     async with db.pool.acquire() as conn:
-        active = await conn.fetch(
-            "SELECT id FROM lessons WHERE student_id = $1 AND status = 'active'", user_id
-        )
+        if account_id is not None:
+            active = await conn.fetch(
+                """
+                SELECT id
+                FROM lessons
+                WHERE student_id = $1
+                  AND account_id = $2
+                  AND status = 'active'
+                """,
+                user_id,
+                account_id,
+            )
+        else:
+            active = await conn.fetch(
+                "SELECT id FROM lessons WHERE student_id = $1 AND status = 'active'",
+                user_id,
+            )
         if not active:
             await callback_query.message.edit_text(
                 build_action_result_text(
@@ -519,16 +540,33 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
             await callback_query.answer()
             return
 
-        await conn.execute(
-            """
-            UPDATE lessons
-            SET status = 'freeze_pending',
-                freeze_reason = $1,
-                freeze_start_date = CURRENT_TIMESTAMP
-            WHERE student_id = $2 AND status = 'active'
-            """,
-            reason, user_id,
-        )
+        if account_id is not None:
+            await conn.execute(
+                """
+                UPDATE lessons
+                SET status = 'freeze_pending',
+                    freeze_reason = $1,
+                    freeze_start_date = CURRENT_TIMESTAMP
+                WHERE student_id = $2
+                  AND account_id = $3
+                  AND status = 'active'
+                """,
+                reason,
+                user_id,
+                account_id,
+            )
+        else:
+            await conn.execute(
+                """
+                UPDATE lessons
+                SET status = 'freeze_pending',
+                    freeze_reason = $1,
+                    freeze_start_date = CURRENT_TIMESTAMP
+                WHERE student_id = $2 AND status = 'active'
+                """,
+                reason,
+                user_id,
+            )
 
     await state.clear()
 
@@ -617,8 +655,16 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
         await callback_query.answer("Урок не найден.", show_alert=True)
         return
 
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
     async with db.pool.acquire() as conn:
-        lesson = await conn.fetchrow("SELECT * FROM lessons WHERE id = $1", lesson_id)
+        if account_id is not None:
+            lesson = await conn.fetchrow(
+                "SELECT * FROM lessons WHERE id = $1 AND account_id = $2",
+                lesson_id,
+                account_id,
+            )
+        else:
+            lesson = await conn.fetchrow("SELECT * FROM lessons WHERE id = $1", lesson_id)
     if not lesson or lesson["student_id"] != callback_query.from_user.id:
         await callback_query.answer("Этот урок недоступен.", show_alert=True)
         return
@@ -659,6 +705,18 @@ async def process_reschedule_pick(callback_query: types.CallbackQuery, db: Datab
     user = await db.get_user(callback_query.from_user.id)
     if not user or user["role"] != "student":
         await callback_query.answer("Доступно только ученикам.", show_alert=True)
+        return
+    if hasattr(db, "has_capability") and not await db.has_capability("smart_reschedule"):
+        await callback_query.message.edit_text(
+            build_action_result_text(
+                "Умный перенос сейчас недоступен",
+                "Для этого аккаунта функция переноса по слотам не активирована.",
+                next_step="Если нужно, можно написать преподавателю вручную.",
+                icon="🔒",
+            ),
+            reply_markup=back_to_menu_keyboard,
+        )
+        await callback_query.answer()
         return
 
     token = callback_query.data.split(':', 1)[1]

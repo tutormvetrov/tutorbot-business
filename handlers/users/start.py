@@ -5,15 +5,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from data import config
-from data.config import load_teacher_info, is_internal_test_account
+from data.config import get_product_name, load_product_config, load_teacher_info, is_internal_test_account
 from keyboards.inline import (
-    role_keyboard, main_keyboard, level_keyboard,
+    get_main_menu_keyboard, role_keyboard, level_keyboard,
     cancel_fsm_keyboard, make_post_registration_keyboard, level_test_prompt_keyboard,
 )
 from states.registration import Registration
 from utils.db_api.postgresql import Database
+from utils.product_ui import build_owner_onboarding_text
 from utils.text_utils import normalize_language, parse_age
 from utils.ui_text import MAIN_MENU_TEXT
+from utils.workspace import extract_invite_token, extract_start_payload, workspace_role_label
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -25,23 +27,77 @@ def _progress(step: int, total: int) -> str:
     return f"\n\n<i>Шаг {step} из {total}: {filled}{empty}</i>"
 
 
+def _menu_keyboard_for_role(role: str | None, user_id: int) -> object:
+    return get_main_menu_keyboard(role, is_platform_admin=user_id == config.ADMIN_ID)
+
+
+async def _complete_workspace_invite(message: Message, db: Database, invite_token: str) -> bool:
+    invite_result = await db.redeem_account_invite(invite_token, message.from_user.id) if hasattr(db, "redeem_account_invite") else None
+    if not invite_result:
+        return False
+
+    account = invite_result.get("account") or {}
+    role = (invite_result.get("account_user") or {}).get("role") or (invite_result.get("invite") or {}).get("role")
+    role_label = workspace_role_label(role)
+    if hasattr(db, "push_account_context") and account.get("id"):
+        account_token = db.push_account_context(account["id"])
+    else:
+        account_token = None
+    try:
+        if hasattr(db, "upsert_account_identity_user"):
+            await db.upsert_account_identity_user(
+                telegram_id=message.from_user.id,
+                full_name=message.from_user.full_name,
+                username=message.from_user.username,
+                role=role or "assistant",
+            )
+    finally:
+        if account_token is not None:
+            db.reset_account_context(account_token)
+
+    await message.answer(
+        "✅ <b>Workspace подключён</b>\n\n"
+        f"Аккаунт: <b>{html.quote(account.get('name', get_product_name()))}</b>\n"
+        f"Роль: <b>{html.quote(role_label)}</b>\n\n"
+        "Инвайт погашен, account context закреплён. Полноценные командные экраны будут расширяться дальше, "
+        "а уже сейчас доступны продуктовые разделы, профиль и рабочие контакты.",
+        reply_markup=_menu_keyboard_for_role(role, message.from_user.id),
+    )
+    return True
+
+
 async def _register_admin(message: Message, db: Database):
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role)
-            VALUES ($1, $2, $3, 'teacher_admin')
-            ON CONFLICT (telegram_id) DO UPDATE SET role = 'teacher_admin'
+            INSERT INTO users (account_id, telegram_id, full_name, username, role)
+            VALUES ($1, $2, $3, $4, 'owner')
+            ON CONFLICT (telegram_id) DO UPDATE
+            SET account_id = EXCLUDED.account_id,
+                full_name = EXCLUDED.full_name,
+                username = EXCLUDED.username,
+                role = 'owner',
+                is_active = true
             """,
+            account_id,
             message.from_user.id,
             message.from_user.full_name,
             message.from_user.username,
         )
+    if hasattr(db, "ensure_account_user"):
+        await db.ensure_account_user(message.from_user.id, "owner")
+    if hasattr(db, "ensure_default_subscription"):
+        await db.ensure_default_subscription()
+    product = load_product_config()
+    snapshot = await db.get_account_billing_snapshot() if hasattr(db, "get_account_billing_snapshot") else {
+        "resolved": type("Snapshot", (), {"effective_status": "trial", "effective_plan_code": "practice", "trial_ends_at": None, "paid_until": None, "is_trial_active": True})(),
+    }
     await message.answer(
-        "✅ Вы вошли как <b>преподаватель и администратор</b>.\n"
-        "Используйте /admin для панели управления.\n\n"
+        f"{build_owner_onboarding_text(snapshot, product)}\n\n"
+        "Используйте /admin для панели управления и продуктовых настроек.\n\n"
         f"{MAIN_MENU_TEXT}",
-        reply_markup=main_keyboard,
+        reply_markup=_menu_keyboard_for_role("owner", message.from_user.id),
     )
 
 
@@ -50,16 +106,28 @@ async def command_start(message: Message, state: FSMContext, db: Database):
     await state.clear()
     logger.info(f"Команда /start от {message.from_user.id}")
     user_id = message.from_user.id
+    product_name = get_product_name()
+    payload = extract_start_payload(message.text)
+    invite_token = extract_invite_token(payload)
 
     if user_id == config.ADMIN_ID:
         await _register_admin(message, db)
         return
 
+    if invite_token:
+        invite_redeemed = await _complete_workspace_invite(message, db, invite_token)
+        if invite_redeemed:
+            return
+        await message.answer(
+            "⚠️ Этот invite уже недействителен: он мог истечь, быть отозван или уже использован.\n\n"
+            "Если доступ ещё нужен, попросите owner или product-admin выпустить новый инвайт.",
+        )
+
     user = await db.get_user(user_id)
 
     if not user:
         await message.answer(
-            "👋 <b>Добро пожаловать!</b>\n\n"
+            f"👋 <b>Добро пожаловать в {html.quote(product_name)}!</b>\n\n"
             "Пожалуйста, выберите вашу роль:",
             reply_markup=role_keyboard,
         )
@@ -68,7 +136,7 @@ async def command_start(message: Message, state: FSMContext, db: Database):
         await message.answer(
             f"👋 С возвращением, <b>{full_name}</b>!\n\n"
             f"{MAIN_MENU_TEXT}",
-            reply_markup=main_keyboard,
+            reply_markup=_menu_keyboard_for_role(user.get("role"), user_id),
         )
 
 
@@ -203,6 +271,7 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     full_name = data["full_name"]
     language = data["language"]
     user_id = callback_query.from_user.id
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
     is_internal_account = is_internal_test_account(
         full_name=full_name,
         username=callback_query.from_user.username or "",
@@ -212,10 +281,11 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, age, language, level, is_internal_account)
-            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7)
+            INSERT INTO users (account_id, telegram_id, full_name, username, role, age, language, level, is_internal_account)
+            VALUES ($1, $2, $3, $4, 'student', $5, $6, $7, $8)
             ON CONFLICT (telegram_id) DO UPDATE
-            SET full_name = EXCLUDED.full_name,
+            SET account_id = EXCLUDED.account_id,
+                full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
                 age = EXCLUDED.age,
@@ -224,6 +294,7 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
                 is_internal_account = EXCLUDED.is_internal_account,
                 is_active = true
             """,
+            account_id,
             user_id,
             full_name,
             callback_query.from_user.username,
@@ -232,6 +303,8 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
             level,
             is_internal_account,
         )
+    if hasattr(db, "ensure_account_user"):
+        await db.ensure_account_user(user_id, "student")
     sync_parent_links = getattr(db, "sync_parent_links_for_student", None)
     if callable(sync_parent_links):
         await sync_parent_links(user_id, full_name)
@@ -292,6 +365,7 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
     student_age = parts[1].strip()
     data = await state.get_data()
     full_name = data["full_name"]
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else 1
     is_internal_account = is_internal_test_account(
         full_name=full_name,
         username=message.from_user.username or "",
@@ -301,20 +375,24 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, is_internal_account)
-            VALUES ($1, $2, $3, 'parent', $4)
+            INSERT INTO users (account_id, telegram_id, full_name, username, role, is_internal_account)
+            VALUES ($1, $2, $3, $4, 'parent', $5)
             ON CONFLICT (telegram_id) DO UPDATE
-            SET full_name = EXCLUDED.full_name,
+            SET account_id = EXCLUDED.account_id,
+                full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
                 is_internal_account = EXCLUDED.is_internal_account,
                 is_active = true
             """,
+            account_id,
             message.from_user.id,
             full_name,
             message.from_user.username,
             is_internal_account,
         )
+    if hasattr(db, "ensure_account_user"):
+        await db.ensure_account_user(message.from_user.id, "parent")
 
     find_active_student = getattr(db, "find_active_student_by_name", None)
     upsert_parent_link = getattr(db, "upsert_parent_student_link", None)
@@ -335,7 +413,7 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
         f"👤 Вы: {safe_full_name}\n"
         f"👧 Ребёнок: {safe_student_name}, {safe_student_age} лет.\n\n"
         f"{MAIN_MENU_TEXT}",
-        reply_markup=main_keyboard,
+        reply_markup=_menu_keyboard_for_role("parent", message.from_user.id),
     )
     await message.answer(
         "🧪 Хотите пройти тест на определение вашего текущего уровня знаний по "

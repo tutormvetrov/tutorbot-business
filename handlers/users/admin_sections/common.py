@@ -176,4 +176,48 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         await _render_admin_homework_list(target, db)
         return True
 
+    if view == "admin:groups":
+        from keyboards.inline import make_groups_keyboard
+        from utils.product_ui import build_groups_text
+
+        groups = await db.get_groups_overview()
+        await target.edit_text(build_groups_text(groups), reply_markup=make_groups_keyboard(groups))
+        return True
+
+    if view == "admin:invites":
+        from keyboards.inline import make_invites_keyboard
+        from utils.product_ui import build_invites_text
+
+        account = await db.get_account()
+        invites = await db.get_active_account_invites()
+        await target.edit_text(
+            build_invites_text(dict(account or {}), [dict(item) for item in invites]),
+            reply_markup=make_invites_keyboard(invites),
+        )
+        return True
+
+    if view == "admin:support":
+        from keyboards.inline import support_keyboard
+        from utils.product_ui import build_support_text
+
+        support_snapshot = await db.get_support_snapshot()
+        product = support_snapshot["billing"]["product"]
+        await target.edit_text(
+            build_support_text(support_snapshot, product),
+            reply_markup=support_keyboard,
+        )
+        return True
+
+    if view.startswith("admin:group:view:"):
+        from keyboards.inline import make_group_detail_keyboard
+        from utils.product_ui import build_group_detail_text
+
+        group_id = int(view.split(":")[3])
+        group = await db.get_group(group_id)
+        if not group:
+            return False
+        members = await db.get_group_members(group_id)
+        await target.edit_text(build_group_detail_text(group, members), reply_markup=make_group_detail_keyboard(group_id))
+        return True
+
     return False

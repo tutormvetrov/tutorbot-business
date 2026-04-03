@@ -5,5 +5,5 @@ from data import config
 from utils.fsm_storage import JsonFileStorage
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-storage = JsonFileStorage("/srv/tutorbot/data/fsm_storage.json")
+storage = JsonFileStorage(config.FSM_STORAGE_FILE)
 dp = Dispatcher(storage=storage)

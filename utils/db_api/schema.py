@@ -8,10 +8,27 @@ class DatabaseSchemaMixin:
     def _log_migration_failure(self, migration_name: str, exc: Exception):
         logger.error("Schema migration failed: %s: %s", migration_name, exc)
 
+    async def create_table_accounts(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id SERIAL PRIMARY KEY,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                owner_user_id BIGINT,
+                is_default BOOLEAN DEFAULT false,
+                timezone TEXT DEFAULT 'Europe/Moscow',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
     async def create_table_users(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 telegram_id BIGINT NOT NULL UNIQUE,
                 full_name VARCHAR(255) NOT NULL,
                 username VARCHAR(255),
@@ -25,6 +42,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS student_parent (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 parent_id BIGINT REFERENCES users(telegram_id),
                 student_info TEXT,
@@ -37,6 +55,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS lessons (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 google_event_id TEXT,
                 lesson_date TIMESTAMP,
@@ -52,6 +71,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS homework (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
@@ -66,6 +86,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 payer_id BIGINT REFERENCES users(telegram_id),
                 student_id BIGINT REFERENCES users(telegram_id),
                 amount DECIMAL(10,2) NOT NULL,
@@ -81,6 +102,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS calendar_student_links (
                 id SERIAL PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id),
                 student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                 calendar_alias TEXT,
                 calendar_event_pattern TEXT,
@@ -91,6 +113,102 @@ class DatabaseSchemaMixin:
                         COALESCE(NULLIF(BTRIM(calendar_alias), ''), NULL) IS NOT NULL
                         OR COALESCE(NULLIF(BTRIM(calendar_event_pattern), ''), NULL) IS NOT NULL
                     )
+            );
+        """, execute=True)
+
+    async def create_table_account_users(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS account_users (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (account_id, telegram_id)
+            );
+        """, execute=True)
+
+    async def create_table_plans(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS plans (
+                code TEXT PRIMARY KEY,
+                sort_order INTEGER NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
+    async def create_table_subscriptions(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                plan_code TEXT NOT NULL REFERENCES plans(code),
+                status TEXT NOT NULL DEFAULT 'trial',
+                trial_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                trial_ends_at TIMESTAMP,
+                paid_until TIMESTAMP,
+                activated_by BIGINT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
+    async def create_table_account_feature_overrides(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS account_feature_overrides (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                capability TEXT NOT NULL,
+                is_enabled BOOLEAN NOT NULL DEFAULT true,
+                updated_by BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (account_id, capability)
+            );
+        """, execute=True)
+
+    async def create_table_account_invites(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS account_invites (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                token TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL,
+                label TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_by BIGINT,
+                redeemed_by BIGINT,
+                expires_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                redeemed_at TIMESTAMP
+            );
+        """, execute=True)
+
+    async def create_table_groups(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
+    async def create_table_group_members(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS group_members (
+                id SERIAL PRIMARY KEY,
+                group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (group_id, student_id)
             );
         """, execute=True)
 
@@ -229,6 +347,36 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_internal_test_accounts", exc)
             return
 
+    async def migrate_account_aware_schema(self):
+        statements = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+            "ALTER TABLE student_parent ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+            "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+            "ALTER TABLE homework ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+            "ALTER TABLE calendar_student_links ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id);",
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_account_aware_schema:{index}", exc)
+                return
+
+    async def migrate_owner_role(self):
+        try:
+            await self.execute(
+                """
+                UPDATE users
+                SET role = 'owner'
+                WHERE role = 'teacher_admin'
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_owner_role", exc)
+            return
+
     async def migrate_lessons_add_balance_consumed(self):
         try:
             await self.execute(
@@ -285,9 +433,83 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_calendar_links_indexes", exc)
             return
 
+    async def backfill_default_account_context(self):
+        account_id = self.require_account_id()
+        try:
+            for table_name in [
+                "users",
+                "student_parent",
+                "lessons",
+                "homework",
+                "payments",
+                "calendar_student_links",
+            ]:
+                await self.execute(
+                    f"UPDATE {table_name} SET account_id = $1 WHERE account_id IS NULL",
+                    account_id,
+                    execute=True,
+                )
+        except Exception as exc:
+            self._log_migration_failure("backfill_default_account_context", exc)
+            return
+
+    async def backfill_account_users(self):
+        account_id = self.require_account_id()
+        try:
+            rows = await self.execute(
+                """
+                SELECT telegram_id, role
+                FROM users
+                WHERE account_id = $1
+                """,
+                account_id,
+                fetch=True,
+            )
+            for row in rows:
+                role = row["role"]
+                if role not in {"owner", "manager", "assistant", "student", "parent"}:
+                    role = "owner"
+                await self.execute(
+                    """
+                    INSERT INTO account_users (account_id, telegram_id, role, status)
+                    VALUES ($1, $2, $3, 'active')
+                    ON CONFLICT (account_id, telegram_id) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        status = 'active',
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    account_id,
+                    row["telegram_id"],
+                    role,
+                    execute=True,
+                )
+                if role == "owner":
+                    await self.execute(
+                        """
+                        UPDATE accounts
+                        SET owner_user_id = COALESCE(owner_user_id, $2),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $1
+                        """,
+                        account_id,
+                        row["telegram_id"],
+                        execute=True,
+                    )
+        except Exception as exc:
+            self._log_migration_failure("backfill_account_users", exc)
+            return
+
     async def verify_required_schema(self):
         required_columns = {
+            "accounts": {
+                "code",
+                "name",
+                "slug",
+                "status",
+                "is_default",
+            },
             "users": {
+                "account_id",
                 "language",
                 "level",
                 "age",
@@ -297,14 +519,25 @@ class DatabaseSchemaMixin:
                 "lesson_format",
                 "speech_style",
             },
+            "student_parent": {"account_id"},
             "lessons": {
+                "account_id",
                 "lesson_date",
                 "reminder_sent",
                 "balance_consumed",
                 "homework_check_reminder_sent",
                 "source",
             },
-            "homework": {"reminder_sent"},
+            "homework": {"account_id", "reminder_sent"},
+            "payments": {"account_id"},
+            "calendar_student_links": {"account_id"},
+            "plans": {"code", "display_name"},
+            "subscriptions": {"account_id", "plan_code", "status", "trial_ends_at", "paid_until"},
+            "account_users": {"account_id", "telegram_id", "role"},
+            "account_feature_overrides": {"account_id", "capability", "is_enabled"},
+            "account_invites": {"account_id", "token", "role", "status"},
+            "groups": {"account_id", "name", "is_active"},
+            "group_members": {"group_id", "student_id"},
         }
 
         rows = await self.execute(
@@ -332,12 +565,20 @@ class DatabaseSchemaMixin:
             )
 
     async def create_all_tables(self):
+        await self.create_table_accounts()
         await self.create_table_users()
         await self.create_table_student_parent()
         await self.create_table_lessons()
         await self.create_table_payments()
         await self.create_table_homework()
         await self.create_table_calendar_student_links()
+        await self.create_table_plans()
+        await self.create_table_subscriptions()
+        await self.create_table_account_users()
+        await self.create_table_account_feature_overrides()
+        await self.create_table_account_invites()
+        await self.create_table_groups()
+        await self.create_table_group_members()
         await self.migrate_lessons_google_event_id()
         await self.migrate_lessons_add_date()
         await self.migrate_lessons_google_event_id_unique()
@@ -346,8 +587,15 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_lesson_format()
         await self.migrate_users_add_speech_style()
         await self.migrate_internal_test_accounts()
+        await self.migrate_account_aware_schema()
+        await self.migrate_owner_role()
         await self.migrate_lessons_add_balance_consumed()
         await self.migrate_lessons_add_homework_check_flag()
         await self.migrate_lessons_add_source()
         await self.migrate_calendar_links_indexes()
+        await self.seed_default_plans()
+        await self.ensure_default_account()
+        await self.backfill_default_account_context()
+        await self.ensure_default_subscription()
+        await self.backfill_account_users()
         await self.verify_required_schema()

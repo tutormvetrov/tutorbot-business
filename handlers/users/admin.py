@@ -25,11 +25,13 @@ from keyboards.inline import (
     make_freeze_action_keyboard,
     make_lesson_delete_confirm_keyboard,
     make_lessons_manage_keyboard,
+    make_paywall_keyboard,
     make_student_select_keyboard,
     make_teacher_reply_keyboard,
 )
 from states.registration import AdminAddLesson, AdminManageLessons
 from utils.brand import brand_tone_label, get_brand_tone, set_brand_tone
+from utils.capabilities import capability_label
 from utils.db_api.postgresql import Database
 from utils.google_calendar import (
     delete_calendar_event,
@@ -38,6 +40,7 @@ from utils.google_calendar import (
     sync_calendar_to_db,
 )
 from utils.observability import load_ops_status
+from utils.product_ui import build_paywall_text
 from utils.speech import choose_form
 from utils.ui_text import (
     ADMIN_ADD_LESSON_INVALID_TEXT,
@@ -152,6 +155,13 @@ async def command_admin(message: types.Message, state: FSMContext, db: Database)
 async def command_sync(message: types.Message, db: Database):
     if not _is_admin(message.from_user.id):
         return
+    if not await db.has_capability("calendar_sync"):
+        snapshot = await db.get_account_billing_snapshot()
+        await message.answer(
+            build_paywall_text(capability_label("calendar_sync"), snapshot, snapshot["product"]),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:service", show_billing=True),
+        )
+        return
     await message.answer(ADMIN_SYNC_IN_PROGRESS_TEXT)
     try:
         report = await sync_calendar_to_db(db)
@@ -197,6 +207,14 @@ async def admin_sync_callback(callback_query: types.CallbackQuery, db: Database)
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
+    if not await db.has_capability("calendar_sync"):
+        snapshot = await db.get_account_billing_snapshot()
+        await callback_query.message.edit_text(
+            build_paywall_text(capability_label("calendar_sync"), snapshot, snapshot["product"]),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:service", show_billing=True),
+        )
+        await callback_query.answer()
+        return
 
     parts = callback_query.data.split(':', 2)
     source = parts[2] if len(parts) > 2 else None
@@ -227,8 +245,16 @@ async def admin_sync_callback(callback_query: types.CallbackQuery, db: Database)
 
 
 @router.callback_query(lambda c: c.data == 'admin:calendar_report')
-async def admin_calendar_report(callback_query: types.CallbackQuery):
+async def admin_calendar_report(callback_query: types.CallbackQuery, db: Database):
     if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    if not await db.has_capability("calendar_sync"):
+        snapshot = await db.get_account_billing_snapshot()
+        await callback_query.message.edit_text(
+            build_paywall_text(capability_label("calendar_sync"), snapshot, snapshot["product"]),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:service", show_billing=True),
+        )
         await callback_query.answer()
         return
 
@@ -424,7 +450,11 @@ async def admin_freeze_action(callback_query: types.CallbackQuery, db: Database)
     lesson_id = int(lesson_id_str)
 
     async with db.pool.acquire() as conn:
-        lesson = await conn.fetchrow('SELECT * FROM lessons WHERE id = $1', lesson_id)
+        lesson = await conn.fetchrow(
+            'SELECT * FROM lessons WHERE id = $1 AND account_id = $2',
+            lesson_id,
+            db.require_account_id(),
+        )
 
     if not lesson:
         await callback_query.message.edit_text(
@@ -534,7 +564,11 @@ async def admin_lesson_delete_confirm(callback_query: types.CallbackQuery, db: D
 
     lesson_id = int(callback_query.data.split(':')[1])
     async with db.pool.acquire() as conn:
-        lesson = await conn.fetchrow('SELECT * FROM lessons WHERE id = $1', lesson_id)
+        lesson = await conn.fetchrow(
+            'SELECT * FROM lessons WHERE id = $1 AND account_id = $2',
+            lesson_id,
+            db.require_account_id(),
+        )
 
     if not lesson:
         await callback_query.message.edit_text("⚠️ Занятие не найдено.", reply_markup=back_to_admin_keyboard)
@@ -571,7 +605,11 @@ async def admin_lesson_delete(callback_query: types.CallbackQuery, db: Database)
     delete_mode = parts[2] if len(parts) > 2 else "db"
 
     async with db.pool.acquire() as conn:
-        lesson = await conn.fetchrow('SELECT * FROM lessons WHERE id = $1', lesson_id)
+        lesson = await conn.fetchrow(
+            'SELECT * FROM lessons WHERE id = $1 AND account_id = $2',
+            lesson_id,
+            db.require_account_id(),
+        )
 
     if not lesson:
         await callback_query.message.edit_text(

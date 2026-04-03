@@ -1,0 +1,23 @@
+[Unit]
+Description=Tutorbot Business Telegram bot
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/tutorbot-business
+EnvironmentFile=/srv/tutorbot-business/.env
+ExecStart=/srv/tutorbot-business/.venv/bin/python /srv/tutorbot-business/app.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+User=deploy
+Group=deploy
+StandardOutput=append:/srv/tutorbot-business/bot.log
+StandardError=append:/srv/tutorbot-business/bot.log
+Environment=PYTHONUNBUFFERED=1
+Environment=TUTORBOT_ROOT=/srv/tutorbot-business
+Environment=TUTORBOT_SERVICE_NAME=tutorbot-business
+
+[Install]
+WantedBy=multi-user.target

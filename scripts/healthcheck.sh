@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${TUTORBOT_ROOT:-/srv/tutorbot}"
+ROOT="${TUTORBOT_ROOT:-/srv/tutorbot-business}"
+SERVICE_NAME="${TUTORBOT_SERVICE_NAME:-tutorbot-business}"
 BOT_CMD="$ROOT/.venv/bin/python $ROOT/app.py"
 OPS_STATUS="$ROOT/data/ops_status.json"
 RUNTIME_METRICS="$ROOT/data/runtime_metrics.jsonl"
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet tutorbot; then
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME"; then
   :
 elif pgrep -af "$BOT_CMD" >/dev/null 2>&1; then
   :

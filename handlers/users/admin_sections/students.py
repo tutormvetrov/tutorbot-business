@@ -656,13 +656,15 @@ async def admin_add_student_id(message: types.Message, state: FSMContext, db: Da
 
     async with db.pool.acquire() as conn:
         internal = is_internal_test_account(full_name=full_name, telegram_id=telegram_id)
+        account_id = db.require_account_id()
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, is_internal_account)
-            VALUES ($1, $2, NULL, 'student', $3)
+            INSERT INTO users (account_id, telegram_id, full_name, username, role, is_internal_account)
+            VALUES ($1, $2, $3, NULL, 'student', $4)
             """,
-            telegram_id, full_name, internal,
+            account_id, telegram_id, full_name, internal,
         )
+    await db.ensure_account_user(telegram_id, "student")
 
     await state.clear()
     internal_line = (

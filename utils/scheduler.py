@@ -246,6 +246,10 @@ async def lesson_reminder_job(bot, db: "Database"):
 
 async def calendar_sync_job(bot, db: "Database"):
     """Каждые 30 минут — автосинхронизация Google Calendar."""
+    if not await db.has_capability("calendar_sync"):
+        update_job_status("calendar_sync", "ok", skipped="plan_locked")
+        write_runtime_event("calendar_sync", "ok", skipped="plan_locked")
+        return
     try:
         from utils.google_calendar import sync_calendar_to_db
         report = await sync_calendar_to_db(db)
@@ -337,6 +341,10 @@ async def review_request_job(bot, db: "Database"):
 
 
 async def parent_weekly_digest_job(bot, db: "Database"):
+    if not await db.has_capability("weekly_digest"):
+        update_job_status("parent_weekly_digest", "ok", skipped="plan_locked")
+        write_runtime_event("parent_weekly_digest", "ok", skipped="plan_locked")
+        return
     period_end = datetime.now()
     period_start = period_end - timedelta(days=7)
     rows = await db.get_parent_weekly_digest_rows(period_start, period_end)

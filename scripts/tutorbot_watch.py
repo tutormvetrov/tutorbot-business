@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 
-ROOT = Path("/srv/tutorbot").resolve()
+ROOT = Path(os.getenv("TUTORBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
+SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot-business.service")
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",
@@ -30,7 +31,7 @@ ALLOWED_SUFFIXES = {".py", ".env", ".toml", ".ini", ".yaml", ".yml", ".json"}
 EXACT_FILENAMES = {".env"}
 POLL_INTERVAL_SECONDS = 1.0
 SETTLE_SECONDS = 0.75
-RESTART_COMMAND = ["systemctl", "--user", "restart", "tutorbot.service"]
+RESTART_COMMAND = ["systemctl", "--user", "restart", SERVICE_NAME]
 
 
 def _should_watch(path: Path) -> bool:
@@ -96,7 +97,7 @@ def _restart_bot() -> bool:
 
 def main() -> int:
     previous = _build_snapshot()
-    print("tutorbot-watch: monitoring project files for changes", flush=True)
+    print(f"tutorbot-watch: monitoring project files for changes in {ROOT}", flush=True)
 
     while True:
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -107,14 +108,14 @@ def main() -> int:
         time.sleep(SETTLE_SECONDS)
         settled = _build_snapshot()
         change_summary = _summarize_changes(previous, settled)
-        print(f"tutorbot-watch: restarting tutorbot after changes in {change_summary}", flush=True)
+        print(f"tutorbot-watch: restarting service after changes in {change_summary}", flush=True)
 
         if _restart_bot():
             previous = settled
-            print("tutorbot-watch: tutorbot.service restarted successfully", flush=True)
+            print(f"tutorbot-watch: {SERVICE_NAME} restarted successfully", flush=True)
             continue
 
-        print("tutorbot-watch: failed to restart tutorbot.service", file=sys.stderr, flush=True)
+        print(f"tutorbot-watch: failed to restart {SERVICE_NAME}", file=sys.stderr, flush=True)
         previous = settled
 
 

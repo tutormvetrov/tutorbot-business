@@ -9,10 +9,13 @@ from keyboards.inline import (
     back_to_admin_keyboard,
     make_calendar_alias_editor_keyboard,
     make_calendar_alias_student_keyboard,
+    make_paywall_keyboard,
 )
 from states.registration import AdminCalendarAliases
+from utils.capabilities import capability_label
 from utils.db_api.postgresql import Database
 from utils.google_calendar import format_sync_report_html, load_last_sync_report, sync_calendar_to_db
+from utils.product_ui import build_paywall_text
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -118,6 +121,14 @@ def _build_calendar_sync_snapshot_lines() -> list[str]:
 @router.callback_query(lambda c: c.data == 'admin:calendar_aliases')
 async def admin_calendar_aliases(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    if not await db.has_capability("calendar_sync"):
+        snapshot = await db.get_account_billing_snapshot()
+        await callback_query.message.edit_text(
+            build_paywall_text(capability_label("calendar_sync"), snapshot, snapshot["product"]),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:service", show_billing=True),
+        )
         await callback_query.answer()
         return
 
