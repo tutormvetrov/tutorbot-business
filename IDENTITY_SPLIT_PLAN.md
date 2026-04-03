@@ -13,11 +13,14 @@
 - `account_users.identity_id` как link между membership и глобальной identity;
 - backfill и support snapshot, показывающие readiness к следующему migration step.
 
-Пока ещё остаётся legacy-ограничение:
+После текущего раунда уже сняты ключевые legacy-ограничения:
 
-- `users.telegram_id` всё ещё `UNIQUE`;
-- ряд таблиц всё ещё логически завязан на `users(telegram_id)`;
-- это не позволяет одному Telegram identity иметь полноценные `users` rows в нескольких account одновременно.
+- `users.telegram_id` больше не держится как глобальный `UNIQUE`;
+- `users` upsertится по `(account_id, telegram_id)`;
+- last-active workspace хранится в `global_identities.last_active_account_id`;
+- базовый multi-workspace UX уже есть: selector, invite switch flow, support snapshot across accounts.
+
+Оставшийся transition-risk теперь смещён не в identity split, а в дальнейшее развитие team permissions и control-plane для общего SaaS.
 
 ## Target State
 
@@ -71,12 +74,16 @@
 - обновить `ON CONFLICT (telegram_id)` на account-scoped upserts;
 - разрешить одному `global_identity` иметь несколько `users` rows по разным account.
 
+Статус: выполнено.
+
 ### Step 5. Multi-Workspace UX
 
 - account selector при нескольких membership;
 - last-active workspace memory;
 - invite accept flow с выбором “переключиться / остаться / открыть новый workspace”;
 - support tools для просмотра membership одного identity across accounts.
+
+Статус: базовый слой выполнен.
 
 ## Risk Notes
 
@@ -86,9 +93,9 @@
 
 ## Done Criteria For The Next Implementation Round
 
-Следующий раунд можно считать завершённым, когда:
+Следующий раунд теперь логично считать завершённым, когда:
 
-1. все domain tables имеют новые surrogate references;
-2. read/write paths больше не зависят от `users(telegram_id)` как от глобального ключа;
-3. `users.telegram_id UNIQUE` можно снять без регрессий;
-4. один Telegram identity проходит smoke-flow в двух account.
+1. owner/manager/assistant матрица будет разведена по чувствительным действиям глубже, чем общий admin gate;
+2. invite/team flows получат полноценный account selector после accept и staff onboarding copy;
+3. появится control-plane слой для support/tooling над несколькими account;
+4. smoke-flow одного identity в двух account будет прогнан уже на живой staging-схеме `tutorscalebot`.

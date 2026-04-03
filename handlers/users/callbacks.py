@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 
 from data import config
 from data.config import load_teacher_info
-from handlers.users.admin_sections.common import restore_admin_view
+from handlers.users.admin_sections.common import is_admin, restore_admin_view
 from keyboards.inline import (
     freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
     cancel_fsm_keyboard, make_freeze_confirm_keyboard, FREEZE_REASON_LABELS,
@@ -20,6 +20,7 @@ from keyboards.inline import (
 )
 from states.registration import FreezeConfirm, StudentReply
 from utils.db_api.postgresql import Database
+from utils.product_ui import build_workspace_menu_text
 from utils.reschedule import decode_reschedule_slot, format_reschedule_slot_label
 from utils.ui_text import (
     ACTION_CANCELLED_TEXT,
@@ -72,8 +73,10 @@ async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, d
     await state.clear()
     user = await db.get_user(callback_query.from_user.id)
     role = user.get("role") if user else None
+    account = await db.get_account()
+    account_user = await db.get_account_user(callback_query.from_user.id, account["id"]) if account else None
     await callback_query.message.edit_text(
-        MAIN_MENU_TEXT,
+        build_workspace_menu_text(dict(account or {}), dict(account_user or {}), MAIN_MENU_TEXT),
         reply_markup=get_main_menu_keyboard(role, is_platform_admin=callback_query.from_user.id == config.ADMIN_ID),
     )
     await callback_query.answer()
@@ -83,8 +86,8 @@ async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, d
 async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     state_data = await state.get_data()
     await state.clear()
-    is_admin = callback_query.from_user.id == config.ADMIN_ID
-    if is_admin:
+    admin_access = is_admin(callback_query.from_user.id)
+    if admin_access:
         restored = await restore_admin_view(
             callback_query.bot,
             db,
@@ -97,7 +100,7 @@ async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db:
             return
     await callback_query.message.edit_text(
         ACTION_CANCELLED_TEXT,
-        reply_markup=back_to_admin_keyboard if is_admin else back_to_menu_keyboard,
+        reply_markup=back_to_admin_keyboard if admin_access else back_to_menu_keyboard,
     )
     await callback_query.answer()
 

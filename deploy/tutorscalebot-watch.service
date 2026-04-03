@@ -1,20 +1,17 @@
 [Unit]
-Description=TutorScalebot Telegram bot
-After=network.target postgresql.service
-Wants=postgresql.service
+Description=TutorScalebot file watcher
+After=tutorscalebot.service
+Requires=tutorscalebot.service
 
 [Service]
 Type=simple
 WorkingDirectory=/srv/tutorscalebot
 EnvironmentFile=/srv/tutorscalebot/.env
-ExecStart=/srv/tutorscalebot/.venv/bin/python /srv/tutorscalebot/app.py
-Restart=on-failure
-RestartSec=5
-TimeoutStopSec=30
+ExecStart=/srv/tutorscalebot/.venv/bin/python /srv/tutorscalebot/scripts/tutorbot_watch.py
+Restart=always
+RestartSec=2
 User=deploy
 Group=deploy
-StandardOutput=append:/srv/tutorscalebot/bot.log
-StandardError=append:/srv/tutorscalebot/bot.log
 Environment=PYTHONUNBUFFERED=1
 Environment=TUTORBOT_ROOT=/srv/tutorscalebot
 Environment=TUTORBOT_SERVICE_NAME=tutorscalebot

@@ -3,18 +3,18 @@ from datetime import datetime
 from aiogram import Router, html, types
 from aiogram.filters import StateFilter
 
-from data import config
 from keyboards.inline import make_back_button_keyboard
 from utils.db_api.postgresql import Database
 from utils.google_calendar import load_last_sync_report
 from utils.observability import load_ops_status, load_recent_runtime_events
 from utils.ui_text import ADMIN_HEALTH_NO_ERRORS_TEXT
+from utils.workspace import has_workspace_admin_access
 
 router = Router()
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return has_workspace_admin_access(user_id)
 
 
 def _format_timestamp(value: str | None) -> str:

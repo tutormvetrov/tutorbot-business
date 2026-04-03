@@ -4,7 +4,6 @@ from aiogram import Router, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
-from data import config
 from handlers.users.admin_sections.common import get_message_origin
 from keyboards.inline import (
     admin_billing_keyboard,
@@ -14,9 +13,10 @@ from keyboards.inline import (
     make_groups_keyboard,
     make_invites_keyboard,
     make_paywall_keyboard,
+    make_product_hub_keyboard,
     make_product_screen_keyboard,
     make_student_select_keyboard,
-    product_hub_keyboard,
+    make_team_keyboard,
     support_keyboard,
 )
 from states.registration import AdminGroups
@@ -34,14 +34,39 @@ from utils.product_ui import (
     build_product_hub_text,
     build_subscription_text,
     build_support_text,
+    build_team_text,
     build_try_or_extend_text,
+)
+from utils.workspace import (
+    has_workspace_admin_access,
+    has_workspace_assistant_invite_access,
+    has_workspace_billing_access,
+    has_workspace_manager_invite_access,
+    has_workspace_staff_access,
+    has_workspace_support_access,
 )
 
 router = Router()
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return has_workspace_admin_access(user_id)
+
+
+def _can_manage_billing(user_id: int) -> bool:
+    return has_workspace_billing_access(user_id)
+
+
+def _can_manage_invites(user_id: int) -> bool:
+    return has_workspace_assistant_invite_access(user_id)
+
+
+def _can_view_support(user_id: int) -> bool:
+    return has_workspace_support_access(user_id)
+
+
+def _can_view_team(user_id: int) -> bool:
+    return has_workspace_staff_access(user_id)
 
 
 async def _show_paywall(
@@ -64,7 +89,7 @@ async def product_hub(callback_query: types.CallbackQuery, db: Database):
     snapshot = await db.get_account_billing_snapshot()
     await callback_query.message.edit_text(
         build_product_hub_text(snapshot, snapshot["product"]),
-        reply_markup=product_hub_keyboard,
+        reply_markup=make_product_hub_keyboard(show_team=_can_view_team(callback_query.from_user.id)),
     )
     await callback_query.answer()
 
@@ -74,7 +99,7 @@ async def product_plans(callback_query: types.CallbackQuery, db: Database):
     snapshot = await db.get_account_billing_snapshot()
     await callback_query.message.edit_text(
         build_plans_text(snapshot, snapshot["product"]),
-        reply_markup=make_product_screen_keyboard(show_billing=_is_admin(callback_query.from_user.id)),
+        reply_markup=make_product_screen_keyboard(show_billing=_can_manage_billing(callback_query.from_user.id)),
     )
     await callback_query.answer()
 
@@ -84,7 +109,7 @@ async def product_included(callback_query: types.CallbackQuery, db: Database):
     snapshot = await db.get_account_billing_snapshot()
     await callback_query.message.edit_text(
         build_included_text(snapshot, snapshot["product"]),
-        reply_markup=make_product_screen_keyboard(show_billing=_is_admin(callback_query.from_user.id)),
+        reply_markup=make_product_screen_keyboard(show_billing=_can_manage_billing(callback_query.from_user.id)),
     )
     await callback_query.answer()
 
@@ -94,7 +119,7 @@ async def product_subscription(callback_query: types.CallbackQuery, db: Database
     snapshot = await db.get_account_billing_snapshot()
     await callback_query.message.edit_text(
         build_subscription_text(snapshot, snapshot["product"]),
-        reply_markup=make_product_screen_keyboard(show_billing=_is_admin(callback_query.from_user.id)),
+        reply_markup=make_product_screen_keyboard(show_billing=_can_manage_billing(callback_query.from_user.id)),
     )
     await callback_query.answer()
 
@@ -104,14 +129,34 @@ async def product_trial(callback_query: types.CallbackQuery, db: Database):
     snapshot = await db.get_account_billing_snapshot()
     await callback_query.message.edit_text(
         build_try_or_extend_text(snapshot, snapshot["product"]),
-        reply_markup=make_product_screen_keyboard(show_billing=_is_admin(callback_query.from_user.id)),
+        reply_markup=make_product_screen_keyboard(show_billing=_can_manage_billing(callback_query.from_user.id)),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data in {"product:team", "admin:team"})
+async def product_team(callback_query: types.CallbackQuery, db: Database):
+    if not _can_view_team(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    account = await db.get_account()
+    team_members = await db.get_account_team_members()
+    account_user = await db.get_account_user(callback_query.from_user.id, account["id"]) if account else None
+    is_admin_view = callback_query.data == "admin:team"
+    await callback_query.message.edit_text(
+        build_team_text(dict(account or {}), [dict(item) for item in team_members], (account_user or {}).get("role")),
+        reply_markup=make_team_keyboard(
+            back_callback="admin:cat:service" if is_admin_view else "product:hub",
+            allow_manager_invite=has_workspace_manager_invite_access(callback_query.from_user.id),
+            allow_assistant_invite=has_workspace_assistant_invite_access(callback_query.from_user.id),
+        ),
     )
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data == "admin:billing")
 async def admin_billing(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     snapshot = await db.get_account_billing_snapshot()
@@ -124,7 +169,7 @@ async def admin_billing(callback_query: types.CallbackQuery, db: Database):
 
 @router.callback_query(lambda c: c.data.startswith("admin:billing:activate:"))
 async def admin_billing_activate(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     _, _, _, plan_code, days_str = callback_query.data.split(":")
@@ -139,7 +184,7 @@ async def admin_billing_activate(callback_query: types.CallbackQuery, db: Databa
 
 @router.callback_query(lambda c: c.data.startswith("admin:billing:trial:"))
 async def admin_billing_trial(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     days = int(callback_query.data.split(":")[3])
@@ -154,7 +199,7 @@ async def admin_billing_trial(callback_query: types.CallbackQuery, db: Database)
 
 @router.callback_query(lambda c: c.data == "admin:billing:disable_trial")
 async def admin_billing_disable_trial(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     await db.disable_trial(activated_by=callback_query.from_user.id)
@@ -168,7 +213,7 @@ async def admin_billing_disable_trial(callback_query: types.CallbackQuery, db: D
 
 @router.callback_query(lambda c: c.data == "admin:billing:overrides")
 async def admin_billing_overrides(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     snapshot = await db.get_account_billing_snapshot()
@@ -181,7 +226,7 @@ async def admin_billing_overrides(callback_query: types.CallbackQuery, db: Datab
 
 @router.callback_query(lambda c: c.data.startswith("admin:billing:override:"))
 async def admin_billing_override_toggle(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_billing(callback_query.from_user.id):
         await callback_query.answer()
         return
     capability = callback_query.data.split(":", 3)[3]
@@ -196,7 +241,7 @@ async def admin_billing_override_toggle(callback_query: types.CallbackQuery, db:
 
 @router.callback_query(lambda c: c.data == "admin:invites")
 async def admin_invites(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_invites(callback_query.from_user.id):
         await callback_query.answer()
         return
     account = await db.get_account()
@@ -204,31 +249,45 @@ async def admin_invites(callback_query: types.CallbackQuery, db: Database):
     bot_username = (await callback_query.bot.get_me()).username
     await callback_query.message.edit_text(
         build_invites_text(dict(account or {}), [dict(item) for item in invites], bot_username=bot_username),
-        reply_markup=make_invites_keyboard(invites),
+        reply_markup=make_invites_keyboard(
+            [dict(item) for item in invites],
+            allow_manager_invite=has_workspace_manager_invite_access(callback_query.from_user.id),
+            allow_assistant_invite=has_workspace_assistant_invite_access(callback_query.from_user.id),
+        ),
     )
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:invite:create:"))
 async def admin_invite_create(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_invites(callback_query.from_user.id):
         await callback_query.answer()
         return
     role = callback_query.data.split(":")[3]
+    if role == "manager" and not has_workspace_manager_invite_access(callback_query.from_user.id):
+        await callback_query.answer("Только owner может приглашать менеджера.", show_alert=True)
+        return
+    if role == "assistant" and not has_workspace_assistant_invite_access(callback_query.from_user.id):
+        await callback_query.answer("Недостаточно прав для инвайта ассистента.", show_alert=True)
+        return
     await db.create_account_invite(role, created_by=callback_query.from_user.id, label=f"{role}-seat")
     account = await db.get_account()
     invites = await db.get_active_account_invites()
     bot_username = (await callback_query.bot.get_me()).username
     await callback_query.message.edit_text(
         build_invites_text(dict(account or {}), [dict(item) for item in invites], bot_username=bot_username),
-        reply_markup=make_invites_keyboard(invites),
+        reply_markup=make_invites_keyboard(
+            [dict(item) for item in invites],
+            allow_manager_invite=has_workspace_manager_invite_access(callback_query.from_user.id),
+            allow_assistant_invite=has_workspace_assistant_invite_access(callback_query.from_user.id),
+        ),
     )
     await callback_query.answer("Инвайт создан.")
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:invite:revoke:"))
 async def admin_invite_revoke(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_manage_invites(callback_query.from_user.id):
         await callback_query.answer()
         return
     invite_id = int(callback_query.data.split(":")[3])
@@ -238,17 +297,21 @@ async def admin_invite_revoke(callback_query: types.CallbackQuery, db: Database)
     bot_username = (await callback_query.bot.get_me()).username
     await callback_query.message.edit_text(
         build_invites_text(dict(account or {}), [dict(item) for item in invites], bot_username=bot_username),
-        reply_markup=make_invites_keyboard(invites),
+        reply_markup=make_invites_keyboard(
+            [dict(item) for item in invites],
+            allow_manager_invite=has_workspace_manager_invite_access(callback_query.from_user.id),
+            allow_assistant_invite=has_workspace_assistant_invite_access(callback_query.from_user.id),
+        ),
     )
     await callback_query.answer("Инвайт отозван.")
 
 
 @router.callback_query(lambda c: c.data == "admin:support")
 async def admin_support(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
+    if not _can_view_support(callback_query.from_user.id):
         await callback_query.answer()
         return
-    support_snapshot = await db.get_support_snapshot()
+    support_snapshot = await db.get_support_snapshot(operator_telegram_id=callback_query.from_user.id)
     product = support_snapshot["billing"]["product"]
     await callback_query.message.edit_text(
         build_support_text(support_snapshot, product),
@@ -268,7 +331,7 @@ async def admin_analytics(callback_query: types.CallbackQuery, db: Database):
             db,
             "analytics_lite",
             back_callback="admin:cat:service",
-            show_billing=True,
+            show_billing=_can_manage_billing(callback_query.from_user.id),
         )
         await callback_query.answer()
         return
@@ -292,7 +355,7 @@ async def admin_groups(callback_query: types.CallbackQuery, db: Database):
             db,
             "groups",
             back_callback="admin:cat:students",
-            show_billing=True,
+            show_billing=_can_manage_billing(callback_query.from_user.id),
         )
         await callback_query.answer()
         return
@@ -315,7 +378,7 @@ async def admin_groups_create_start(callback_query: types.CallbackQuery, state: 
             db,
             "groups",
             back_callback="admin:cat:students",
-            show_billing=True,
+            show_billing=_can_manage_billing(callback_query.from_user.id),
         )
         await callback_query.answer()
         return

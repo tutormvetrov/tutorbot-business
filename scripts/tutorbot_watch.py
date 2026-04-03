@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(os.getenv("TUTORBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
 SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot")
+SYSTEMD_SCOPE = os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system").strip().lower() or "system"
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",
@@ -31,7 +32,11 @@ ALLOWED_SUFFIXES = {".py", ".env", ".toml", ".ini", ".yaml", ".yml", ".json"}
 EXACT_FILENAMES = {".env"}
 POLL_INTERVAL_SECONDS = 1.0
 SETTLE_SECONDS = 0.75
-RESTART_COMMAND = ["systemctl", "--user", "restart", SERVICE_NAME]
+RESTART_COMMAND = (
+    ["systemctl", "--user", "restart", SERVICE_NAME]
+    if SYSTEMD_SCOPE == "user"
+    else ["systemctl", "restart", SERVICE_NAME]
+)
 
 
 def _should_watch(path: Path) -> bool:

@@ -17,6 +17,7 @@ class DatabaseSchemaMixin:
             CREATE TABLE IF NOT EXISTS global_identities (
                 id SERIAL PRIMARY KEY,
                 telegram_id BIGINT NOT NULL UNIQUE,
+                last_active_account_id INTEGER,
                 full_name VARCHAR(255),
                 username VARCHAR(255),
                 status TEXT NOT NULL DEFAULT 'active',
@@ -374,6 +375,21 @@ class DatabaseSchemaMixin:
                 self._log_migration_failure(f"migrate_identity_split_indexes:{index}", exc)
                 return
 
+    async def migrate_global_identities_last_active_account(self):
+        statements = [
+            "ALTER TABLE global_identities ADD COLUMN IF NOT EXISTS last_active_account_id INTEGER;",
+            """
+            CREATE INDEX IF NOT EXISTS global_identities_last_active_account_idx
+            ON global_identities (last_active_account_id);
+            """,
+        ]
+        for index, statement in enumerate(statements, start=1):
+            try:
+                await self.execute(statement, execute=True)
+            except Exception as exc:
+                self._log_migration_failure(f"migrate_global_identities_last_active_account:{index}", exc)
+                return
+
     async def migrate_users_account_scoped_unique_index(self):
         try:
             await self.execute(
@@ -385,6 +401,68 @@ class DatabaseSchemaMixin:
             )
         except Exception as exc:
             self._log_migration_failure("migrate_users_account_scoped_unique_index", exc)
+            return
+
+    async def migrate_drop_users_global_telegram_uniqueness(self):
+        try:
+            constraints = await self.execute(
+                """
+                SELECT DISTINCT c.conname
+                FROM pg_constraint c
+                JOIN pg_class tbl
+                  ON tbl.oid = c.conrelid
+                JOIN pg_namespace ns
+                  ON ns.oid = tbl.relnamespace
+                JOIN pg_attribute attr
+                  ON attr.attrelid = tbl.oid
+                 AND attr.attnum = ANY(c.conkey)
+                WHERE ns.nspname = current_schema()
+                  AND tbl.relname = 'users'
+                  AND c.contype = 'u'
+                GROUP BY c.conname
+                HAVING COUNT(*) = 1
+                   AND BOOL_AND(attr.attname = 'telegram_id')
+                """,
+                fetch=True,
+            )
+            for row in constraints:
+                quoted_constraint = self._quote_identifier(row["conname"])
+                await self.execute(
+                    f"ALTER TABLE users DROP CONSTRAINT IF EXISTS {quoted_constraint};",
+                    execute=True,
+                )
+
+            indexes = await self.execute(
+                """
+                SELECT ic.relname AS indexname
+                FROM pg_index idx
+                JOIN pg_class tbl
+                  ON tbl.oid = idx.indrelid
+                JOIN pg_class ic
+                  ON ic.oid = idx.indexrelid
+                JOIN pg_namespace ns
+                  ON ns.oid = tbl.relnamespace
+                JOIN pg_attribute attr
+                  ON attr.attrelid = tbl.oid
+                 AND attr.attnum = ANY(idx.indkey)
+                WHERE ns.nspname = current_schema()
+                  AND tbl.relname = 'users'
+                  AND idx.indisunique = true
+                GROUP BY ic.relname
+                HAVING COUNT(*) = 1
+                   AND BOOL_AND(attr.attname = 'telegram_id')
+                   AND ic.relname <> 'users_account_telegram_unique_idx'
+                """,
+                fetch=True,
+            )
+            for row in indexes:
+                quoted_index = self._quote_identifier(row["indexname"])
+                await self.execute(
+                    f"DROP INDEX IF EXISTS {quoted_index};",
+                    execute=True,
+                )
+        except Exception as exc:
+            self._log_migration_failure("migrate_drop_users_global_telegram_uniqueness", exc)
             return
 
     async def migrate_drop_legacy_user_telegram_foreign_keys(self):
@@ -704,6 +782,42 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("backfill_global_identities", exc)
             return
 
+    async def backfill_identity_last_active_accounts(self):
+        try:
+            await self.execute(
+                """
+                UPDATE global_identities gi
+                SET last_active_account_id = ranked.account_id
+                FROM (
+                    SELECT DISTINCT ON (au.identity_id)
+                        au.identity_id,
+                        au.account_id
+                    FROM account_users au
+                    JOIN accounts a
+                      ON a.id = au.account_id
+                    WHERE au.identity_id IS NOT NULL
+                      AND au.status = 'active'
+                      AND a.status = 'active'
+                    ORDER BY
+                        au.identity_id,
+                        CASE au.role
+                            WHEN 'owner' THEN 1
+                            WHEN 'manager' THEN 2
+                            WHEN 'assistant' THEN 3
+                            WHEN 'parent' THEN 4
+                            ELSE 5
+                        END,
+                        au.account_id
+                ) ranked
+                WHERE gi.id = ranked.identity_id
+                  AND gi.last_active_account_id IS NULL
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("backfill_identity_last_active_accounts", exc)
+            return
+
     async def backfill_account_user_identities(self):
         try:
             await self.execute(
@@ -800,6 +914,7 @@ class DatabaseSchemaMixin:
         required_columns = {
             "global_identities": {
                 "telegram_id",
+                "last_active_account_id",
                 "status",
             },
             "accounts": {
@@ -892,7 +1007,9 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_speech_style()
         await self.migrate_identity_split_columns()
         await self.migrate_identity_split_indexes()
+        await self.migrate_global_identities_last_active_account()
         await self.migrate_users_account_scoped_unique_index()
+        await self.migrate_drop_users_global_telegram_uniqueness()
         await self.migrate_domain_user_ref_columns()
         await self.migrate_domain_user_ref_indexes()
         await self.migrate_drop_legacy_user_telegram_foreign_keys()
@@ -910,5 +1027,6 @@ class DatabaseSchemaMixin:
         await self.ensure_default_subscription()
         await self.backfill_account_users()
         await self.backfill_account_user_identities()
+        await self.backfill_identity_last_active_accounts()
         await self.backfill_domain_user_refs()
         await self.verify_required_schema()

@@ -1,13 +1,13 @@
 from aiogram import html, types
 
-from data import config
 from data.config import load_teacher_info
 from utils.brand import choose_tone_variant
 from utils.speech import choose_form
+from utils.workspace import has_workspace_admin_access
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return has_workspace_admin_access(user_id)
 
 
 def q(value) -> str:
@@ -205,6 +205,18 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         await target.edit_text(
             build_support_text(support_snapshot, product),
             reply_markup=support_keyboard,
+        )
+        return True
+
+    if view == "admin:team":
+        from keyboards.inline import make_team_keyboard
+        from utils.product_ui import build_team_text
+
+        account = await db.get_account()
+        team_members = await db.get_account_team_members()
+        await target.edit_text(
+            build_team_text(dict(account or {}), [dict(item) for item in team_members]),
+            reply_markup=make_team_keyboard(back_callback="admin:cat:service"),
         )
         return True
 

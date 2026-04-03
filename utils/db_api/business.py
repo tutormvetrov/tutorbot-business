@@ -38,6 +38,41 @@ class DatabaseBusinessMixin:
             fetchrow=True,
         )
 
+    async def set_last_active_account(
+        self,
+        telegram_id: int,
+        account_id: int | None,
+        identity_id: int | None = None,
+    ) -> bool:
+        identity = (
+            await self.get_global_identity_by_id(identity_id)
+            if identity_id is not None
+            else await self.get_global_identity(telegram_id)
+        )
+        if not identity:
+            return False
+
+        if account_id is not None:
+            membership = await self.get_account_user_by_identity(identity["id"], account_id)
+            if not membership and telegram_id is not None:
+                membership = await self.get_account_user(telegram_id, account_id)
+            if not membership:
+                return False
+
+        await self.execute(
+            """
+            UPDATE global_identities
+            SET last_active_account_id = $2,
+                updated_at = CURRENT_TIMESTAMP,
+                last_seen_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            """,
+            identity["id"],
+            account_id,
+            execute=True,
+        )
+        return True
+
     async def ensure_global_identity(
         self,
         telegram_id: int,
@@ -89,6 +124,33 @@ class DatabaseBusinessMixin:
             FROM accounts
             WHERE id = $1
             """,
+            account_id,
+            fetchrow=True,
+        )
+
+    async def get_account_user_by_identity(self, identity_id: int, account_id: int):
+        return await self.execute(
+            """
+            SELECT
+                au.*,
+                a.name AS account_name,
+                a.slug AS account_slug,
+                a.status AS account_status,
+                gi.full_name AS identity_full_name,
+                gi.username AS identity_username
+            FROM account_users au
+            JOIN accounts a
+              ON a.id = au.account_id
+            LEFT JOIN global_identities gi
+              ON gi.id = au.identity_id
+            WHERE au.identity_id = $1
+              AND au.account_id = $2
+              AND au.status = 'active'
+              AND a.status = 'active'
+            ORDER BY au.id
+            LIMIT 1
+            """,
+            identity_id,
             account_id,
             fetchrow=True,
         )
@@ -151,21 +213,119 @@ class DatabaseBusinessMixin:
             fetchrow=True,
         )
 
+    async def get_identity_memberships(
+        self,
+        telegram_id: int | None = None,
+        identity_id: int | None = None,
+    ) -> list:
+        if identity_id is not None:
+            return await self.execute(
+                """
+                SELECT
+                    au.*,
+                    a.name AS account_name,
+                    a.slug AS account_slug,
+                    a.status AS account_status,
+                    gi.full_name AS identity_full_name,
+                    gi.username AS identity_username,
+                    gi.last_active_account_id
+                FROM account_users au
+                JOIN accounts a
+                  ON a.id = au.account_id
+                LEFT JOIN global_identities gi
+                  ON gi.id = au.identity_id
+                WHERE au.identity_id = $1
+                  AND au.status = 'active'
+                  AND a.status = 'active'
+                ORDER BY
+                    CASE
+                        WHEN gi.last_active_account_id = au.account_id THEN 0
+                        ELSE 1
+                    END,
+                    CASE au.role
+                        WHEN 'owner' THEN 1
+                        WHEN 'manager' THEN 2
+                        WHEN 'assistant' THEN 3
+                        WHEN 'parent' THEN 4
+                        ELSE 5
+                    END,
+                    a.name,
+                    au.account_id
+                """,
+                identity_id,
+                fetch=True,
+            )
+
+        if telegram_id is None:
+            return []
+
+        return await self.execute(
+            """
+            SELECT
+                au.*,
+                a.name AS account_name,
+                a.slug AS account_slug,
+                a.status AS account_status,
+                gi.full_name AS identity_full_name,
+                gi.username AS identity_username,
+                gi.last_active_account_id
+            FROM account_users au
+            JOIN accounts a
+              ON a.id = au.account_id
+            LEFT JOIN global_identities gi
+              ON gi.id = au.identity_id
+            WHERE au.telegram_id = $1
+              AND au.status = 'active'
+              AND a.status = 'active'
+            ORDER BY
+                CASE
+                    WHEN gi.last_active_account_id = au.account_id THEN 0
+                    ELSE 1
+                END,
+                CASE au.role
+                    WHEN 'owner' THEN 1
+                    WHEN 'manager' THEN 2
+                    WHEN 'assistant' THEN 3
+                    WHEN 'parent' THEN 4
+                    ELSE 5
+                END,
+                a.name,
+                au.account_id
+            """,
+            telegram_id,
+            fetch=True,
+        )
+
     async def resolve_account_context(self, telegram_id: int | None = None, invite_token: str | None = None) -> dict:
         invite = None
         account_user = None
         account = None
+        identity = await self.get_global_identity(telegram_id) if telegram_id is not None else None
 
         if invite_token:
             invite = await self.get_account_invite_by_token(invite_token)
             if invite:
                 account = await self.get_account_by_id(invite["account_id"])
                 if telegram_id is not None:
-                    account_user = await self.get_account_user(telegram_id, invite["account_id"])
+                    if identity and identity.get("id"):
+                        account_user = await self.get_account_user_by_identity(identity["id"], invite["account_id"])
+                    if not account_user:
+                        account_user = await self.get_account_user(telegram_id, invite["account_id"])
+
+        if account is None and identity and identity.get("last_active_account_id"):
+            account = await self.get_account_by_id(identity["last_active_account_id"])
+            if account and account.get("status") == "active":
+                account_user = await self.get_account_user_by_identity(identity["id"], account["id"])
+                if not account_user:
+                    account = None
 
         if account is None and telegram_id is not None:
-            account_user = await self.get_account_user(telegram_id)
-            if account_user:
+            memberships = await self.get_identity_memberships(
+                telegram_id=telegram_id,
+                identity_id=identity["id"] if identity else None,
+            )
+            if memberships:
+                account_user = memberships[0]
                 account = await self.get_account_by_id(account_user["account_id"])
 
         if account is None and telegram_id is not None:
@@ -183,12 +343,13 @@ class DatabaseBusinessMixin:
             )
             if user_account:
                 account = await self.get_account_by_id(user_account["account_id"])
-                account_user = await self.get_account_user(telegram_id, user_account["account_id"])
+                if identity and identity.get("id"):
+                    account_user = await self.get_account_user_by_identity(identity["id"], user_account["account_id"])
+                if not account_user:
+                    account_user = await self.get_account_user(telegram_id, user_account["account_id"])
 
         if account is None:
             account = await self.get_default_account()
-
-        identity = await self.get_global_identity(telegram_id) if telegram_id is not None else None
 
         return {
             "account": dict(account) if account else None,
@@ -316,6 +477,7 @@ class DatabaseBusinessMixin:
             role,
             execute=True,
         )
+        await self.set_last_active_account(telegram_id, account_id, identity_id=identity_id)
         if role == "owner":
             await self.set_account_owner(telegram_id)
 
@@ -682,6 +844,17 @@ class DatabaseBusinessMixin:
                     telegram_id,
                     invite["role"],
                 )
+                await conn.execute(
+                    """
+                    UPDATE global_identities
+                    SET last_active_account_id = $2,
+                        updated_at = CURRENT_TIMESTAMP,
+                        last_seen_at = CURRENT_TIMESTAMP
+                    WHERE id = $1
+                    """,
+                    identity_id,
+                    invite["account_id"],
+                )
                 if invite["role"] == "owner":
                     await conn.execute(
                         """
@@ -835,6 +1008,62 @@ class DatabaseBusinessMixin:
             "total_global_identities": total_global_identities,
         }
 
+    async def get_identity_workspace_snapshot(
+        self,
+        telegram_id: int | None = None,
+        identity_id: int | None = None,
+    ) -> dict:
+        identity = None
+        if identity_id is not None:
+            identity = await self.get_global_identity_by_id(identity_id)
+        elif telegram_id is not None:
+            identity = await self.get_global_identity(telegram_id)
+        memberships = await self.get_identity_memberships(
+            telegram_id=telegram_id,
+            identity_id=identity["id"] if identity else identity_id,
+        )
+        return {
+            "identity": dict(identity) if identity else None,
+            "memberships": [dict(item) for item in memberships],
+        }
+
+    async def get_account_team_members(self):
+        return await self.execute(
+            """
+            SELECT
+                au.id,
+                au.account_id,
+                au.identity_id,
+                au.telegram_id,
+                au.role,
+                au.status,
+                au.created_at,
+                au.updated_at,
+                COALESCE(u.full_name, gi.full_name, '@' || NULLIF(gi.username, '')) AS display_name,
+                COALESCE(u.username, gi.username) AS username
+            FROM account_users au
+            LEFT JOIN users u
+              ON u.account_id = au.account_id
+             AND (u.identity_id = au.identity_id OR u.telegram_id = au.telegram_id)
+            LEFT JOIN global_identities gi
+              ON gi.id = au.identity_id
+            WHERE au.account_id = $1
+              AND au.status = 'active'
+            ORDER BY
+                CASE au.role
+                    WHEN 'owner' THEN 1
+                    WHEN 'manager' THEN 2
+                    WHEN 'assistant' THEN 3
+                    WHEN 'parent' THEN 4
+                    ELSE 5
+                END,
+                COALESCE(u.full_name, gi.full_name, ''),
+                au.id
+            """,
+            self.require_account_id(),
+            fetch=True,
+        )
+
     async def get_domain_user_ref_snapshot(self):
         account_id = self.require_account_id()
         checks = {
@@ -933,7 +1162,7 @@ class DatabaseBusinessMixin:
             "total_missing": total_missing,
         }
 
-    async def get_support_snapshot(self):
+    async def get_support_snapshot(self, operator_telegram_id: int | None = None):
         account = await self.get_account()
         billing = await self.get_account_billing_snapshot()
         analytics = await self.get_account_analytics_snapshot()
@@ -942,6 +1171,8 @@ class DatabaseBusinessMixin:
         identity_split = await self.get_identity_split_snapshot()
         domain_user_refs = await self.get_domain_user_ref_snapshot()
         owner_user = await self.get_account_owner_user()
+        identity_workspace = await self.get_identity_workspace_snapshot(telegram_id=operator_telegram_id)
+        team_members = await self.get_account_team_members()
         active_members = await self.execute(
             """
             SELECT COUNT(*)::int
@@ -961,6 +1192,8 @@ class DatabaseBusinessMixin:
             "partition": partition,
             "identity_split": identity_split,
             "domain_user_refs": domain_user_refs,
+            "identity_workspace": identity_workspace,
+            "team_members": [dict(item) for item in team_members],
             "owner_user": dict(owner_user) if owner_user else None,
             "active_members": int(active_members or 0),
         }

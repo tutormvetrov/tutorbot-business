@@ -7,9 +7,9 @@ from aiogram import Router, html, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
-from data import config
 from keyboards.inline import admin_notes_keyboard, cancel_fsm_keyboard, make_back_button_keyboard
 from states.registration import AdminNotes
+from utils.workspace import has_workspace_admin_access
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К сервису", "a
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return has_workspace_admin_access(user_id)
 
 
 def _load_notes() -> list:

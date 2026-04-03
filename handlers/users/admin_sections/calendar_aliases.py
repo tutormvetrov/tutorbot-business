@@ -4,7 +4,6 @@ from aiogram import Router, html, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
-from data import config
 from keyboards.inline import (
     back_to_admin_keyboard,
     make_calendar_alias_editor_keyboard,
@@ -16,13 +15,14 @@ from utils.capabilities import capability_label
 from utils.db_api.postgresql import Database
 from utils.google_calendar import format_sync_report_html, load_last_sync_report, sync_calendar_to_db
 from utils.product_ui import build_paywall_text
+from utils.workspace import has_workspace_admin_access
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return has_workspace_admin_access(user_id)
 
 
 def _q(value) -> str:

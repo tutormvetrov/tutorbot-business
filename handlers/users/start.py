@@ -8,11 +8,11 @@ from data import config
 from data.config import get_product_name, load_product_config, load_teacher_info, is_internal_test_account
 from keyboards.inline import (
     get_main_menu_keyboard, role_keyboard, level_keyboard,
-    cancel_fsm_keyboard, make_post_registration_keyboard, level_test_prompt_keyboard,
+    cancel_fsm_keyboard, make_invite_join_keyboard, make_post_registration_keyboard, level_test_prompt_keyboard,
 )
 from states.registration import Registration
 from utils.db_api.postgresql import Database
-from utils.product_ui import build_owner_onboarding_text
+from utils.product_ui import build_owner_onboarding_text, build_workspace_menu_text
 from utils.text_utils import normalize_language, parse_age
 from utils.ui_text import MAIN_MENU_TEXT
 from utils.workspace import extract_invite_token, extract_start_payload, workspace_role_label
@@ -43,6 +43,7 @@ async def _identity_id_for(db: Database, telegram_id: int, full_name: str = "", 
 
 
 async def _complete_workspace_invite(message: Message, db: Database, invite_token: str) -> bool:
+    previous_context = await db.resolve_account_context(message.from_user.id)
     invite_result = await db.redeem_account_invite(
         invite_token,
         message.from_user.id,
@@ -55,14 +56,28 @@ async def _complete_workspace_invite(message: Message, db: Database, invite_toke
     account = invite_result.get("account") or {}
     role = (invite_result.get("account_user") or {}).get("role") or (invite_result.get("invite") or {}).get("role")
     role_label = workspace_role_label(role)
+    previous_account = previous_context.get("account") or {}
+    previous_account_user = previous_context.get("account_user") or {}
+    previous_account_id = previous_account.get("id")
+    previous_account_name = previous_account.get("name")
+    if not previous_account_user:
+        previous_account_id = None
+        previous_account_name = None
+    if previous_account_id == account.get("id"):
+        previous_account_id = None
+        previous_account_name = None
 
     await message.answer(
         "✅ <b>Workspace подключён</b>\n\n"
         f"Аккаунт: <b>{html.quote(account.get('name', get_product_name()))}</b>\n"
         f"Роль: <b>{html.quote(role_label)}</b>\n\n"
-        "Инвайт погашен, account context закреплён. Полноценные командные экраны будут расширяться дальше, "
-        "а уже сейчас доступны продуктовые разделы, профиль и рабочие контакты.",
-        reply_markup=_menu_keyboard_for_role(role, message.from_user.id),
+        "Инвайт погашен, этот workspace уже закреплён как активный. Можно сразу открыть его, "
+        "вернуться в прошлый account или переключиться через selector.",
+        reply_markup=make_invite_join_keyboard(
+            previous_account_id=previous_account_id,
+            previous_account_name=previous_account_name,
+            role=role,
+        ),
     )
     return True
 
@@ -141,9 +156,11 @@ async def command_start(message: Message, state: FSMContext, db: Database):
         )
     else:
         full_name = html.quote(user["full_name"])
+        account = await db.get_account()
+        account_user = await db.get_account_user(user_id, account["id"]) if account else None
         await message.answer(
             f"👋 С возвращением, <b>{full_name}</b>!\n\n"
-            f"{MAIN_MENU_TEXT}",
+            f"{build_workspace_menu_text(dict(account or {}), dict(account_user or {}), MAIN_MENU_TEXT)}",
             reply_markup=_menu_keyboard_for_role(user.get("role"), user_id),
         )
 

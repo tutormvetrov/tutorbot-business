@@ -9,6 +9,9 @@
 - capability resolver и feature gating по планам;
 - группы, analytics-lite, segment broadcasts groundwork;
 - invite flows, support tooling, account-aware routing и partition health checks;
+- изолированный runtime-контур для `TutorScalebot`: отдельный deploy root, `.env`, service/watch unit и `PGSCHEMA`;
+- multi-workspace UX: selector, last-active workspace memory, invite switch flow, support snapshot across accounts;
+- mini-school growth layer: manager/assistant memberships, team screen, membership-aware admin gates;
 - подготовка к SaaS-переходу без немедленного усложнения billing и RBAC.
 
 ## Phase 5. Identity Split And Multi-Workspace Readiness
@@ -75,7 +78,7 @@
 
 Если идти самым сильным порядком после текущего этапа, следующий спринт лучше посвятить:
 
-1. identity split design + migration draft;
-2. role-aware menus and permissions for `manager` / `assistant`;
-3. account selector strategy for future shared SaaS-bot;
-4. support console for product-admin across multiple accounts.
+1. углубить permission matrix для owner / manager / assistant по чувствительным операциям;
+2. собрать control-plane support console поверх нескольких account и планов;
+3. довести workspace onboarding для staff и mini-school сценария;
+4. готовить staging smoke-flow общего SaaS-бота на отдельной operational schema.

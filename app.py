@@ -17,7 +17,12 @@ from loader import bot, dp
 from utils.db_api.postgresql import Database
 from utils.observability import update_ops_status, write_runtime_event
 from utils.ui_text import DEACTIVATED_ACCOUNT_TEXT
-from utils.workspace import extract_invite_token, extract_start_payload
+from utils.workspace import (
+    extract_invite_token,
+    extract_start_payload,
+    push_workspace_context,
+    reset_workspace_context,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,12 +64,16 @@ class DatabaseMiddleware(BaseMiddleware):
         account_user = resolved_context.get("account_user")
         identity = resolved_context.get("identity")
         context_token = self.db.push_account_context(account["id"] if account else self.db.account_id)
+        workspace_tokens = push_workspace_context(account, account_user, identity)
 
         try:
             data["account"] = account
             data["account_user"] = account_user
             data["account_invite"] = resolved_context.get("invite")
             data["identity"] = identity
+
+            if user_id and account and account_user and identity:
+                await self.db.set_last_active_account(user_id, account["id"], identity_id=identity["id"])
 
             db_user = await self.db.get_user(user_id) if user_id else None
             data["db_user"] = db_user
@@ -100,6 +109,7 @@ class DatabaseMiddleware(BaseMiddleware):
                         logger.warning("Не удалось отправить сообщение об ошибке: %s", answer_exc)
                 return None
         finally:
+            reset_workspace_context(workspace_tokens)
             self.db.reset_account_context(context_token)
 
 async def main():
@@ -132,6 +142,7 @@ async def main():
     public_commands = [
         BotCommand(command="start",   description="Начать работу с ботом"),
         BotCommand(command="menu",    description="Главное меню"),
+        BotCommand(command="workspace", description="Переключить workspace"),
         BotCommand(command="help",    description="Помощь"),
         BotCommand(command="profile", description="Мой профиль"),
     ]

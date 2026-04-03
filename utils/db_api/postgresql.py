@@ -44,14 +44,42 @@ class Database(
     def reset_account_context(self, token):
         self._account_id_var.reset(token)
 
+    def _build_search_path(self) -> str:
+        schema = (config.PGSCHEMA or "public").strip()
+        if schema == "public":
+            return "public"
+        return f'{self._quote_identifier(schema)}, public'
+
+    async def _ensure_operational_schema(self):
+        schema = (config.PGSCHEMA or "public").strip()
+        if not schema or schema == "public":
+            return
+        connection = await asyncpg.connect(
+            user=config.PGUSER,
+            password=config.PGPASSWORD,
+            host=config.PGHOST,
+            port=int(config.PGPORT),
+            database=config.DATABASE,
+        )
+        try:
+            await connection.execute(f"CREATE SCHEMA IF NOT EXISTS {self._quote_identifier(schema)};")
+        finally:
+            await connection.close()
+
     async def create_pool(self):
+        await self._ensure_operational_schema()
+
+        async def _init_connection(connection: Connection):
+            await connection.execute(f"SET search_path TO {self._build_search_path()};")
+            await connection.execute("SET TIME ZONE 'Europe/Moscow';")
+
         self.pool = await asyncpg.create_pool(
             user=config.PGUSER,
             password=config.PGPASSWORD,
             host=config.PGHOST,
             port=int(config.PGPORT),
             database=config.DATABASE,
-            server_settings={"TimeZone": "Europe/Moscow"},
+            init=_init_connection,
         )
 
     async def execute(

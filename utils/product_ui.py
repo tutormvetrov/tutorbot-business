@@ -23,6 +23,55 @@ def _locked_features_lines(snapshot: dict) -> list[str]:
     return [f"• {html.quote(capability_label(item))}" for item in resolved.locked_capabilities]
 
 
+def build_workspace_menu_text(account: dict | None, account_user: dict | None, base_text: str) -> str:
+    account_name = (account or {}).get("name")
+    role_label = workspace_role_label((account_user or {}).get("role"))
+    lines = []
+    if account_name:
+        lines.extend([
+            f"🏢 <b>{html.quote(account_name)}</b>",
+            f"Роль в workspace: <b>{html.quote(role_label)}</b>",
+            "",
+        ])
+    lines.append(base_text)
+    return "\n".join(lines)
+
+
+def build_workspace_selector_text(
+    memberships: list[dict],
+    current_account_id: int | None = None,
+    identity: dict | None = None,
+) -> str:
+    lines = [
+        "🧭 <b>Workspace Selector</b>",
+        "",
+    ]
+    if identity:
+        display_name = identity.get("full_name") or ("@" + identity["username"] if identity.get("username") else None)
+        if display_name:
+            lines.append(f"Identity: <b>{html.quote(display_name)}</b>")
+        if identity.get("last_active_account_id"):
+            lines.append(f"Last active account: <b>{html.quote(str(identity['last_active_account_id']))}</b>")
+        lines.append("")
+
+    if not memberships:
+        lines.append("У этой identity пока нет активных workspace-membership.")
+        return "\n".join(lines)
+
+    lines.append(f"Доступно workspace: <b>{len(memberships)}</b>")
+    for membership in memberships:
+        marker = "✅" if membership.get("account_id") == current_account_id else "•"
+        lines.append(
+            f"{marker} <b>{html.quote(membership.get('account_name', 'Workspace'))}</b> "
+            f"· {html.quote(workspace_role_label(membership.get('role')))}"
+        )
+    lines.extend([
+        "",
+        "Выберите workspace ниже, чтобы закрепить его как активный для следующих экранов и команд.",
+    ])
+    return "\n".join(lines)
+
+
 def build_product_hub_text(snapshot: dict | None, product: dict) -> str:
     lines = [
         f"💼 <b>{html.quote(product.get('product_name', 'TutorScalebot'))}</b>",
@@ -280,6 +329,39 @@ def build_invites_text(account: dict, invites: list[dict], bot_username: str | N
     return "\n".join(lines)
 
 
+def build_team_text(account: dict, members: list[dict], current_role: str | None = None) -> str:
+    lines = [
+        "👥 <b>Команда workspace</b>",
+        "",
+        f"Workspace: <b>{html.quote(account.get('name', '—'))}</b>",
+    ]
+    if current_role:
+        lines.append(f"Ваш текущий доступ: <b>{html.quote(workspace_role_label(current_role))}</b>")
+    if not members:
+        lines.extend([
+            "",
+            "В команде пока только базовый owner-контур. Добавьте менеджера или ассистента через инвайты.",
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
+        "",
+        f"Активных membership: <b>{len(members)}</b>",
+    ])
+    for member in members:
+        display_name = member.get("display_name") or member.get("username") or str(member.get("telegram_id") or "—")
+        username = member.get("username")
+        suffix = f" · @{html.quote(username)}" if username else ""
+        lines.append(
+            f"• <b>{html.quote(display_name)}</b> — {html.quote(workspace_role_label(member.get('role')))}{suffix}"
+        )
+    lines.extend([
+        "",
+        "Контур mini-school уже готов: owner управляет billing и составом команды, manager ведёт операционный слой, assistant подключается через workspace-aware invite flow.",
+    ])
+    return "\n".join(lines)
+
+
 def build_partition_text(partition: dict) -> str:
     lines = [
         "🧱 <b>Data Partitioning</b>",
@@ -332,6 +414,9 @@ def build_support_text(snapshot: dict, product: dict) -> str:
     partition = snapshot.get("partition") or {}
     identity_split = snapshot.get("identity_split") or {}
     domain_user_refs = snapshot.get("domain_user_refs") or {}
+    identity_workspace = snapshot.get("identity_workspace") or {}
+    identity = identity_workspace.get("identity") or {}
+    memberships = identity_workspace.get("memberships") or []
 
     lines = [
         "🆘 <b>Support Tooling</b>",
@@ -355,6 +440,22 @@ def build_support_text(snapshot: dict, product: dict) -> str:
             f"Trial до: <b>{html.quote(_format_datetime(resolved.trial_ends_at))}</b>",
             f"Paid until: <b>{html.quote(_format_datetime(resolved.paid_until))}</b>",
         ])
+    if identity:
+        identity_name = identity.get("full_name") or ("@" + identity["username"] if identity.get("username") else "—")
+        lines.extend([
+            "",
+            "<b>Identity across workspaces</b>",
+            f"Identity: <b>{html.quote(identity_name)}</b>",
+            f"Telegram ID: <b>{html.quote(str(identity.get('telegram_id', '—')))}</b>",
+            f"Last active account: <b>{html.quote(str(identity.get('last_active_account_id', '—')))}</b>",
+            f"Workspace memberships: <b>{len(memberships)}</b>",
+        ])
+        for membership in memberships:
+            current_suffix = " · current" if membership.get("account_id") == account.get("id") else ""
+            lines.append(
+                f"• {html.quote(membership.get('account_name', 'Workspace'))} — "
+                f"{html.quote(workspace_role_label(membership.get('role')))}{current_suffix}"
+            )
     lines.extend([
         "",
         "<b>Операционная сводка</b>",

@@ -22,6 +22,7 @@ PGPASSWORD = str(os.getenv("PGPASSWORD"))
 DATABASE = str(os.getenv("DATABASE"))
 PGHOST = str(os.getenv("PGHOST"))
 PGPORT = str(os.getenv("PGPORT"))
+PGSCHEMA = (os.getenv("PGSCHEMA", "tutorscalebot") or "tutorscalebot").strip() or "tutorscalebot"
 
 POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}"
 
@@ -33,7 +34,7 @@ SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
 GOOGLE_CREDENTIALS_FILE = os.getenv(
     "GOOGLE_CREDENTIALS_FILE",
-    "/home/deploy/.secrets/tutorbot/credentials.json",
+    "/home/deploy/.secrets/tutorscalebot/credentials.json",
 )
 
 _CONFIG_DIR = Path(__file__).resolve().parent
