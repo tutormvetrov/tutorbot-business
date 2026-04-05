@@ -1,4 +1,7 @@
+import json
 import logging
+
+from data.config import load_ui_seed_defaults
 
 
 logger = logging.getLogger(__name__)
@@ -238,6 +241,37 @@ class DatabaseSchemaMixin:
                 student_id BIGINT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (group_id, student_id)
+            );
+        """, execute=True)
+
+    async def create_table_account_ui_configs(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS account_ui_configs (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+                draft_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                published_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                draft_version INTEGER NOT NULL DEFAULT 1,
+                published_version INTEGER NOT NULL DEFAULT 1,
+                updated_by BIGINT,
+                published_by BIGINT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                published_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
+    async def create_table_account_ui_versions(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS account_ui_versions (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL,
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                published_by BIGINT,
+                published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (account_id, version)
             );
         """, execute=True)
 
@@ -674,6 +708,91 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_calendar_links_indexes", exc)
             return
 
+    async def seed_account_ui_configs(self):
+        try:
+            defaults = load_ui_seed_defaults()
+            seed_payload = json.dumps(defaults, ensure_ascii=False)
+            accounts = await self.execute(
+                "SELECT id FROM accounts ORDER BY id",
+                fetch=True,
+            )
+            for row in accounts:
+                account_id = row["id"]
+                await self.execute(
+                    """
+                    INSERT INTO account_ui_configs (
+                        account_id,
+                        draft_payload,
+                        published_payload,
+                        draft_version,
+                        published_version,
+                        updated_at,
+                        published_at,
+                        created_at
+                    )
+                    VALUES (
+                        $1,
+                        $2::jsonb,
+                        $2::jsonb,
+                        1,
+                        1,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (account_id) DO UPDATE
+                    SET draft_payload = CASE
+                            WHEN account_ui_configs.draft_payload = '{}'::jsonb THEN EXCLUDED.draft_payload
+                            ELSE account_ui_configs.draft_payload
+                        END,
+                        published_payload = CASE
+                            WHEN account_ui_configs.published_payload = '{}'::jsonb THEN EXCLUDED.published_payload
+                            ELSE account_ui_configs.published_payload
+                        END,
+                        draft_version = CASE
+                            WHEN account_ui_configs.draft_payload = '{}'::jsonb
+                             AND account_ui_configs.published_payload = '{}'::jsonb
+                            THEN 1
+                            ELSE account_ui_configs.draft_version
+                        END,
+                        published_version = CASE
+                            WHEN account_ui_configs.draft_payload = '{}'::jsonb
+                             AND account_ui_configs.published_payload = '{}'::jsonb
+                            THEN 1
+                            ELSE account_ui_configs.published_version
+                        END,
+                        published_at = CASE
+                            WHEN account_ui_configs.published_payload = '{}'::jsonb
+                            THEN CURRENT_TIMESTAMP
+                            ELSE account_ui_configs.published_at
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    account_id,
+                    seed_payload,
+                    execute=True,
+                )
+                await self.execute(
+                    """
+                    INSERT INTO account_ui_versions (
+                        account_id,
+                        version,
+                        payload,
+                        published_by,
+                        published_at,
+                        created_at
+                    )
+                    VALUES ($1, 1, $2::jsonb, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (account_id, version) DO NOTHING
+                    """,
+                    account_id,
+                    seed_payload,
+                    execute=True,
+                )
+        except Exception as exc:
+            self._log_migration_failure("seed_account_ui_configs", exc)
+            return
+
     async def backfill_default_account_context(self):
         account_id = self.require_account_id()
         try:
@@ -954,6 +1073,24 @@ class DatabaseSchemaMixin:
             "account_users": {"account_id", "identity_id", "telegram_id", "role"},
             "account_feature_overrides": {"account_id", "capability", "is_enabled"},
             "account_invites": {"account_id", "token", "role", "status"},
+            "account_ui_configs": {
+                "account_id",
+                "draft_payload",
+                "published_payload",
+                "draft_version",
+                "published_version",
+                "updated_by",
+                "published_by",
+                "updated_at",
+                "published_at",
+            },
+            "account_ui_versions": {
+                "account_id",
+                "version",
+                "payload",
+                "published_by",
+                "published_at",
+            },
             "groups": {"account_id", "name", "is_active"},
             "group_members": {"group_id", "student_id", "student_user_id"},
         }
@@ -996,6 +1133,8 @@ class DatabaseSchemaMixin:
         await self.create_table_account_users()
         await self.create_table_account_feature_overrides()
         await self.create_table_account_invites()
+        await self.create_table_account_ui_configs()
+        await self.create_table_account_ui_versions()
         await self.create_table_groups()
         await self.create_table_group_members()
         await self.migrate_lessons_google_event_id()
@@ -1022,6 +1161,7 @@ class DatabaseSchemaMixin:
         await self.migrate_calendar_links_indexes()
         await self.seed_default_plans()
         await self.ensure_default_account()
+        await self.seed_account_ui_configs()
         await self.backfill_default_account_context()
         await self.backfill_global_identities()
         await self.ensure_default_subscription()

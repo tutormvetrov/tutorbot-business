@@ -83,13 +83,13 @@ PLAN_CAPABILITY_MATRIX: dict[str, dict[str, Any]] = {
 }
 
 CAPABILITY_LABELS: dict[str, str] = {
-    "calendar_sync": "Google Calendar sync",
+    "calendar_sync": "синхронизация с Google Calendar",
     "smart_reschedule": "умный перенос",
-    "weekly_digest": "weekly digest для родителей",
+    "weekly_digest": "еженедельная сводка для родителей",
     "segmented_broadcasts": "сегментные рассылки",
     "groups": "группы",
-    "analytics_lite": "analytics lite",
-    "analytics_plus": "analytics plus",
+    "analytics_lite": "базовая аналитика",
+    "analytics_plus": "расширенная аналитика",
     "team_roles": "командные роли",
     "priority_features": "приоритетные функции",
 }
@@ -107,8 +107,8 @@ CAPABILITY_ORDER = [
 ]
 
 TRIAL_STATUS_LABELS = {
-    "trial": "trial активен",
-    "trial_expired": "trial завершён",
+    "trial": "пробный период активен",
+    "trial_expired": "пробный период завершён",
     "active": "подписка активна",
     "expired": "подписка истекла",
     "inactive": "подписка не активирована",

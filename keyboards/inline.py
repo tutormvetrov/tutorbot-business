@@ -1,5 +1,11 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from utils.account_ui import (
+    UI_MENU_SECTION_LABELS,
+    UI_PREVIEW_ROLES,
+    get_main_menu_entries,
+    resolve_ui_payload,
+)
 from utils.brand import BRAND_TONE_LABELS
 from utils.speech import speech_style_icon, speech_style_label, speech_style_toggle_label
 from utils.workspace import workspace_role_label
@@ -64,37 +70,103 @@ main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📅 Расписание", "schedule"), _btn("📚 Домашние задания", "homework")],
     [_btn("❄️ Заморозка", "freeze"), _btn("💰 Оплата", "payment")],
     [_btn("👤 Профиль", "profile"), _btn("📞 Контакты", "contacts")],
-    [_btn("🧭 Workspace", "workspace:selector"), _btn("💼 Продукт", "product:hub")],
+    [_btn("🏢 Аккаунт", "workspace:selector"), _btn("💼 Продукт", "product:hub")],
     [_btn("💳 Реквизиты", "requisites")],
 ])
 
-owner_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("🛠 Панель", "admin:home"), _btn("🧭 Workspace", "workspace:selector")],
-    [_btn("💼 Продукт", "product:hub"), _btn("👥 Команда", "product:team")],
+parent_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("👨‍👧 Дети", "parent:children"), _btn("💰 Оплата", "payment")],
     [_btn("👤 Профиль", "profile"), _btn("📞 Контакты", "contacts")],
     [_btn("💳 Реквизиты", "requisites")],
 ])
 
-manager_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("🛠 Панель", "admin:home"), _btn("🧭 Workspace", "workspace:selector")],
-    [_btn("💼 Продукт", "product:hub"), _btn("👥 Команда", "product:team")],
-    [_btn("📞 Контакты", "contacts"), _btn("💳 Реквизиты", "requisites")],
-])
-
-workspace_member_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("🧭 Workspace", "workspace:selector"), _btn("💼 Продукт", "product:hub")],
+owner_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🚦 Быстрый запуск", "admin:setup"), _btn("🛠 Панель", "admin:home")],
+    [_btn("🏢 Аккаунт", "workspace:selector"), _btn("💼 Продукт", "product:hub")],
     [_btn("👥 Команда", "product:team"), _btn("👤 Профиль", "profile")],
-    [_btn("📞 Контакты", "contacts"), _btn("💳 Реквизиты", "requisites")],
 ])
 
+owner_onboarding_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🚦 Быстрый запуск", "admin:setup"), _btn("🛠 Панель", "admin:home")],
+    [_btn("🎨 Оформление", "admin:ui"), _btn("💼 Продукт", "product:hub")],
+    [_btn("🏢 Аккаунт", "workspace:selector")],
+])
 
-def get_main_menu_keyboard(role: str | None, is_platform_admin: bool = False) -> InlineKeyboardMarkup:
-    if is_platform_admin or role == "owner":
+manager_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🛠 Панель", "admin:home"), _btn("🏢 Аккаунт", "workspace:selector")],
+    [_btn("💼 Продукт", "product:hub"), _btn("👥 Команда", "product:team")],
+    [_btn("👤 Профиль", "profile")],
+])
+
+owner_setup_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🎨 Оформление", "admin:ui"), _btn("📞 Контакты", "admin:ui:contacts")],
+    [_btn("💳 Реквизиты", "admin:ui:requisites"), _btn("👤 Добавить ученика", "admin:add_student")],
+    [_btn("➕ Добавить занятие", "admin:add_lesson:education"), _btn("🔄 Calendar", "admin:sync:system")],
+    [_btn("🧾 Подписка и тариф", "admin:billing"), _btn("💼 Продукт", "product:hub")],
+    [_btn("◀️ Главное меню", "back_to_menu")],
+])
+
+assistant_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🏢 Аккаунт", "workspace:selector"), _btn("💼 Продукт", "product:hub")],
+    [_btn("👥 Команда", "product:team"), _btn("👤 Профиль", "profile")],
+])
+
+workspace_member_keyboard = assistant_main_keyboard
+
+
+def _menu_entry_button(item: dict) -> InlineKeyboardButton:
+    label = str(item.get("label") or "Кнопка")
+    kind = str(item.get("kind") or "callback")
+    value = str(item.get("value") or "")
+    if kind in {"url", "telegram_url"}:
+        return _url_btn(label, value)
+    return _btn(label, value)
+
+
+def _menu_entries_keyboard(
+    entries: list[dict],
+    *,
+    back_callback: str = "back_to_menu",
+    back_label: str = "◀️ Главное меню",
+) -> InlineKeyboardMarkup:
+    rows = []
+    current_row = []
+    for item in entries:
+        if not item.get("enabled", True):
+            continue
+        current_row.append(_menu_entry_button(item))
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.append([_btn(back_label, back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_main_menu_keyboard(
+    role: str | None,
+    is_platform_admin: bool = False,
+    ui_config: dict | None = None,
+) -> InlineKeyboardMarkup:
+    payload = resolve_ui_payload(ui_config)
+    entries = get_main_menu_entries(
+        payload,
+        role,
+        is_platform_admin=is_platform_admin,
+        include_disabled=False,
+    )
+    if entries:
+        return _menu_entries_keyboard(entries)
+    normalized = (role or "").strip().lower()
+    if is_platform_admin or normalized == "owner":
         return owner_main_keyboard
-    if role == "manager":
+    if normalized == "manager":
         return manager_main_keyboard
-    if role == "assistant":
-        return workspace_member_keyboard
+    if normalized == "assistant":
+        return assistant_main_keyboard
+    if normalized == "parent":
+        return parent_main_keyboard
     return main_keyboard
 
 # ─── Freeze ───────────────────────────────────────────────────────────────────
@@ -201,7 +273,8 @@ def make_lesson_presence_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
 
 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👥 Ученики", "admin:cat:students"), _btn("📚 Учебный процесс", "admin:cat:education")],
-    [_btn("📢 Коммуникации", "admin:cat:communication"), _btn("⚙️ Сервис", "admin:cat:service")],
+    [_btn("📢 Коммуникации", "admin:cat:communication"), _btn("🏢 Аккаунт", "admin:cat:account")],
+    [_btn("🛠 Система", "admin:cat:system")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
 
@@ -225,16 +298,32 @@ admin_communication_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("◀️ К панели", "back_to_admin")],
 ])
 
+admin_account_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("📈 Аналитика", "admin:analytics"), _btn("🧾 Тариф", "admin:billing")],
+    [_btn("👥 Команда", "admin:team"), _btn("🔗 Инвайты", "admin:invites")],
+    [_btn("🆘 Диагностика", "admin:support"), _btn("🏢 Аккаунт", "workspace:selector")],
+    [_btn("◀️ К панели", "admin:home")],
+])
+
+admin_system_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🚦 Быстрый запуск", "admin:setup"), _btn("🔄 Синхронизация Calendar", "admin:sync:system")],
+    [_btn("🧭 Алиасы Calendar", "admin:calendar_aliases"), _btn("📋 Отчёт синхронизации", "admin:calendar_report")],
+    [_btn("🏥 Здоровье бота", "admin:health"), _btn("🎨 Оформление и экраны", "admin:ui")],
+    [_btn("📝 Сообщения для отладки", "admin:notes")],
+    [_btn("◀️ К панели", "admin:home")],
+])
+
 admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🚦 Быстрый запуск", "admin:setup")],
     [_btn("🔄 Синхронизация Calendar", "admin:sync:service")],
     [_btn("🧭 Алиасы Calendar", "admin:calendar_aliases")],
     [_btn("📋 Отчёт синхронизации", "admin:calendar_report")],
     [_btn("💳 Тарифы", "product:plans"), _btn("🪪 Подписка", "product:subscription")],
-    [_btn("📈 Аналитика", "admin:analytics"), _btn("🧾 Billing", "admin:billing")],
+    [_btn("📈 Аналитика", "admin:analytics"), _btn("🧾 Тариф", "admin:billing")],
     [_btn("👥 Команда", "admin:team"), _btn("🔗 Инвайты", "admin:invites")],
-    [_btn("🆘 Support", "admin:support"), _btn("🧭 Workspace", "workspace:selector")],
+    [_btn("🆘 Диагностика", "admin:support"), _btn("🏢 Аккаунт", "workspace:selector")],
     [_btn("🏥 Здоровье бота", "admin:health")],
-    [_btn("🎨 Тональность бренда", "admin:brand_tone")],
+    [_btn("🎨 Оформление и экраны", "admin:ui")],
     [_btn("📝 Сообщения для отладки", "admin:notes")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
@@ -377,7 +466,26 @@ def make_admin_students_list_keyboard(students: list, page: int, page_size: int)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_admin_student_card_keyboard(
+def make_admin_student_card_card_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("✉️ Написать", f"admin:write_to_student:{telegram_id}:{page}"),
+            _btn("💰 Оплаты", f"admin:student_payments:{telegram_id}:{page}"),
+        ],
+    ])
+
+
+def make_admin_student_card_actions_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("➕ Урок", f"admin:quick:add_lesson:{telegram_id}:{page}"),
+            _btn("💳 Добавить оплату", f"admin:quick:add_payment:{telegram_id}:{page}"),
+        ],
+        [_btn("📚 Задать ДЗ", f"admin:quick:add_homework:{telegram_id}:{page}")],
+    ])
+
+
+def make_admin_student_card_settings_keyboard(
     telegram_id: int,
     page: int,
     lesson_format: str = "online",
@@ -388,25 +496,35 @@ def make_admin_student_card_keyboard(
     toggle_to = "online" if is_offline else "offline"
     toggle_label = "Переключить на онлайн" if is_offline else "Переключить на очно"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            _btn("✉️ Написать", f"admin:write_to_student:{telegram_id}:{page}"),
-            _btn("💰 Оплаты", f"admin:student_payments:{telegram_id}:{page}"),
-        ],
-        [
-            _btn("➕ Урок", f"admin:quick:add_lesson:{telegram_id}:{page}"),
-            _btn("💳 Добавить оплату", f"admin:quick:add_payment:{telegram_id}:{page}"),
-        ],
-        [_btn("📚 Задать ДЗ", f"admin:quick:add_homework:{telegram_id}:{page}")],
         [_btn(f"{format_label} · {toggle_label}", f"admin:student_format:{telegram_id}:{page}:{toggle_to}")],
         [_btn(
             f"🗣 Обращение: {speech_style_label(speech_style)} · {speech_style_toggle_label(speech_style)}",
             f"admin:student_speech_style:{telegram_id}:{page}:{'informal' if speech_style == 'formal' else 'formal'}",
         )],
+    ])
+
+
+def make_admin_student_card_danger_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
         [_btn("🗑 Деактивировать", f"admin:student_deactivate_prompt:{telegram_id}:{page}")],
         [_btn("💀 Удалить навсегда", f"admin:student_delete_prompt:{telegram_id}:{page}")],
-        [_btn("◀️ К списку учеников", f"admin:students:page:{page}")],
-        [_btn("◀️ К панели", "back_to_admin")],
     ])
+
+
+def make_admin_student_card_keyboard(
+    telegram_id: int,
+    page: int,
+    lesson_format: str = "online",
+    speech_style: str = "formal",
+) -> InlineKeyboardMarkup:
+    rows = []
+    rows.extend(make_admin_student_card_card_keyboard(telegram_id, page).inline_keyboard)
+    rows.extend(make_admin_student_card_actions_keyboard(telegram_id, page).inline_keyboard)
+    rows.extend(make_admin_student_card_settings_keyboard(telegram_id, page, lesson_format, speech_style).inline_keyboard)
+    rows.extend(make_admin_student_card_danger_keyboard(telegram_id, page).inline_keyboard)
+    rows.append([_btn("◀️ К списку учеников", f"admin:students:page:{page}")])
+    rows.append([_btn("◀️ К панели", "back_to_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_admin_lesson_formats_keyboard(students: list) -> InlineKeyboardMarkup:
@@ -499,14 +617,16 @@ def make_back_button_keyboard(label: str, callback_data: str) -> InlineKeyboardM
     ])
 
 
-def make_product_hub_keyboard(show_team: bool = False) -> InlineKeyboardMarkup:
+def make_product_hub_keyboard(show_team: bool = False, show_setup: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [_btn("💳 Тарифы", "product:plans"), _btn("🧩 Что входит", "product:included")],
         [_btn("🪪 Подписка", "product:subscription")],
         [_btn("🚀 Попробовать / Продлить", "product:trial")],
     ]
+    if show_setup:
+        rows.append([_btn("🚦 Быстрый запуск", "admin:setup")])
     if show_team:
-        rows.append([_btn("👥 Команда", "product:team"), _btn("🧭 Workspace", "workspace:selector")])
+        rows.append([_btn("👥 Команда", "product:team"), _btn("🏢 Аккаунт", "workspace:selector")])
     rows.append([_btn("◀️ Главное меню", "back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -517,7 +637,7 @@ def make_product_screen_keyboard(back_callback: str = "product:hub", show_billin
         [_btn("🪪 Подписка", "product:subscription"), _btn("🚀 Попробовать / Продлить", "product:trial")],
     ]
     if show_billing:
-        rows.append([_btn("🧾 Billing", "admin:billing")])
+        rows.append([_btn("🧾 Тариф", "admin:billing")])
     rows.append([_btn("◀️ Назад", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -528,7 +648,7 @@ def make_paywall_keyboard(back_callback: str = "product:hub", show_billing: bool
         [_btn("🚀 Попробовать / Продлить", "product:trial")],
     ]
     if show_billing:
-        rows.append([_btn("🧾 Billing", "admin:billing")])
+        rows.append([_btn("🧾 Тариф", "admin:billing")])
     rows.append([_btn("◀️ Назад", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -536,27 +656,27 @@ def make_paywall_keyboard(back_callback: str = "product:hub", show_billing: bool
 admin_billing_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("Start · 30 дней", "admin:billing:activate:start:30"), _btn("Practice · 30 дней", "admin:billing:activate:practice:30")],
     [_btn("Studio · 30 дней", "admin:billing:activate:studio:30"), _btn("Practice · 90 дней", "admin:billing:activate:practice:90")],
-    [_btn("➕ Trial +7 дней", "admin:billing:trial:7"), _btn("➕ Trial +14 дней", "admin:billing:trial:14")],
-    [_btn("⛔ Отключить trial", "admin:billing:disable_trial")],
-    [_btn("🧩 Overrides", "admin:billing:overrides")],
-    [_btn("◀️ К сервису", "admin:cat:service")],
+    [_btn("➕ Пробный +7 дней", "admin:billing:trial:7"), _btn("➕ Пробный +14 дней", "admin:billing:trial:14")],
+    [_btn("⛔ Завершить пробный", "admin:billing:disable_trial")],
+    [_btn("🧩 Доп. функции", "admin:billing:overrides")],
+    [_btn("◀️ К аккаунту", "admin:cat:account")],
 ])
 
 
 def make_billing_overrides_keyboard(enabled_capabilities: set[str]) -> InlineKeyboardMarkup:
     rows = []
     for capability, label in [
-        ("calendar_sync", "Calendar sync"),
+        ("calendar_sync", "Синхронизация с Google Calendar"),
         ("smart_reschedule", "Умный перенос"),
-        ("weekly_digest", "Weekly digest"),
+        ("weekly_digest", "Еженедельная сводка"),
         ("segmented_broadcasts", "Сегментные рассылки"),
         ("groups", "Группы"),
-        ("analytics_plus", "Analytics plus"),
-        ("team_roles", "Командные роли"),
+        ("analytics_plus", "Расширенная аналитика"),
+        ("team_roles", "Доступ для команды"),
     ]:
         prefix = "✅" if capability in enabled_capabilities else "➕"
         rows.append([_btn(f"{prefix} {label}", f"admin:billing:override:{capability}")])
-    rows.append([_btn("◀️ Назад к billing", "admin:billing")])
+    rows.append([_btn("◀️ Назад к тарифу", "admin:billing")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -583,7 +703,7 @@ def make_invites_keyboard(
     *,
     allow_manager_invite: bool = True,
     allow_assistant_invite: bool = True,
-    back_callback: str = "admin:cat:service",
+    back_callback: str = "admin:cat:account",
 ) -> InlineKeyboardMarkup:
     rows = []
     invite_buttons = []
@@ -600,15 +720,15 @@ def make_invites_keyboard(
                 f"admin:invite:revoke:{invite['id']}",
             )
         ])
-    rows.append([_btn("👥 Команда", "admin:team"), _btn("🆘 Support", "admin:support")])
+    rows.append([_btn("👥 Команда", "admin:team"), _btn("🆘 Диагностика", "admin:support")])
     rows.append([_btn("◀️ Назад", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 support_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👥 Команда", "admin:team"), _btn("🔗 Инвайты", "admin:invites")],
-    [_btn("🧾 Billing", "admin:billing"), _btn("🧭 Workspace", "workspace:selector")],
-    [_btn("◀️ К сервису", "admin:cat:service")],
+    [_btn("🧾 Тариф", "admin:billing"), _btn("🏢 Аккаунт", "workspace:selector")],
+    [_btn("◀️ К аккаунту", "admin:cat:account")],
 ])
 
 
@@ -627,9 +747,9 @@ def make_team_keyboard(
     if invite_buttons:
         rows.append(invite_buttons)
     if allow_manager_invite or allow_assistant_invite:
-        rows.append([_btn("🔗 Инвайты", "admin:invites"), _btn("🧭 Workspace", "workspace:selector")])
+        rows.append([_btn("🔗 Инвайты", "admin:invites"), _btn("🏢 Аккаунт", "workspace:selector")])
     else:
-        rows.append([_btn("🧭 Workspace", "workspace:selector")])
+        rows.append([_btn("🏢 Аккаунт", "workspace:selector")])
     rows.append([_btn("◀️ Назад", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -640,7 +760,7 @@ def make_workspace_selector_keyboard(memberships: list[dict], current_account_id
         prefix = "✅" if membership.get("account_id") == current_account_id else "🏢"
         rows.append([
             _btn(
-                f"{prefix} {membership.get('account_name', 'Workspace')} · {workspace_role_label(membership.get('role'))}",
+                f"{prefix} {membership.get('account_name', 'Аккаунт')} · {workspace_role_label(membership.get('role'))}",
                 f"workspace:switch:{membership['account_id']}",
             )
         ])
@@ -654,7 +774,7 @@ def make_invite_join_keyboard(
     previous_account_name: str | None = None,
     role: str | None = None,
 ) -> InlineKeyboardMarkup:
-    rows = [[_btn("✅ Открыть активный workspace", "back_to_menu")]]
+    rows = [[_btn("✅ Открыть активный аккаунт", "back_to_menu")]]
     if previous_account_id is not None and previous_account_name:
         rows.append([
             _btn(
@@ -663,9 +783,9 @@ def make_invite_join_keyboard(
             )
         ])
     if role in {"owner", "manager", "assistant"}:
-        rows.append([_btn("👥 Команда", "product:team"), _btn("🧭 Workspace", "workspace:selector")])
+        rows.append([_btn("👥 Команда", "product:team"), _btn("🏢 Аккаунт", "workspace:selector")])
     else:
-        rows.append([_btn("🧭 Workspace", "workspace:selector")])
+        rows.append([_btn("🏢 Аккаунт", "workspace:selector")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -697,7 +817,7 @@ def make_student_select_keyboard(students: list) -> InlineKeyboardMarkup:
 admin_notes_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("➕ Новая заметка", "admin:notes:add")],
     [_btn("🧹 Очистить ленту", "admin:notes:clear")],
-    [_btn("◀️ К сервису", "admin:cat:service")],
+    [_btn("◀️ К системе", "admin:cat:system")],
 ])
 
 
@@ -749,7 +869,7 @@ def make_calendar_alias_student_keyboard(students: list) -> InlineKeyboardMarkup
         if len(label) > 60:
             label = label[:58] + "…"
         rows.append([_btn(label, f"calendar_alias_student:{student['telegram_id']}")])
-    rows.append([_btn("◀️ К сервису", "admin:cat:service")])
+    rows.append([_btn("◀️ К системе", "admin:cat:system")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -766,5 +886,78 @@ def make_brand_tone_keyboard(current_tone: str) -> InlineKeyboardMarkup:
     for tone, label in BRAND_TONE_LABELS.items():
         prefix = "• " if tone == current_tone else ""
         rows.append([_btn(f"{prefix}{label.capitalize()}", f"admin:brand_tone_set:{tone}")])
-    rows.append([_btn("◀️ К сервису", "admin:cat:service")])
+    rows.append([_btn("◀️ К системе", "admin:cat:system")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+ui_constructor_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🎨 Оформление", "admin:ui:branding"), _btn("🧾 Тексты", "admin:ui:copy")],
+    [_btn("📞 Контакты", "admin:ui:contacts"), _btn("💳 Реквизиты", "admin:ui:requisites")],
+    [_btn("📚 Меню", "admin:ui:menu"), _btn("👁 Предпросмотр", "admin:ui:preview")],
+    [_btn("🚀 Опубликовать", "admin:ui:publish"), _btn("🕘 История", "admin:ui:history")],
+    [_btn("◀️ К системе", "admin:cat:system")],
+])
+
+
+def make_ui_section_keyboard(section: str, fields: list[tuple[str, str]], back_callback: str = "admin:ui") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, f"admin:ui:edit:{section}:{field}")] for field, label in fields]
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_tone_keyboard(current_tone: str, back_callback: str = "admin:ui:branding") -> InlineKeyboardMarkup:
+    rows = []
+    for tone, label in BRAND_TONE_LABELS.items():
+        prefix = "• " if tone == current_tone else ""
+        rows.append([_btn(f"{prefix}{label.capitalize()}", f"admin:ui:tone:{tone}")])
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_preview_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for role, label in UI_PREVIEW_ROLES.items():
+        rows.append([_btn(label, f"admin:ui:preview:{role}")])
+    rows.append([_btn("◀️ Назад", "admin:ui")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_menu_sections_keyboard(back_callback: str = "admin:ui") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, f"admin:ui:menu:section:{section}")] for section, label in UI_MENU_SECTION_LABELS.items()]
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_menu_section_keyboard(section: str, items: list[dict], back_callback: str = "admin:ui:menu") -> InlineKeyboardMarkup:
+    rows = []
+    for item in items:
+        item_id = str(item.get("id"))
+        status = "✅" if item.get("enabled", True) else "🚫"
+        kind = item.get("kind", "callback")
+        rows.append([_btn(f"{status} {item.get('label', item_id)}", f"admin:ui:menu:toggle:{section}:{item_id}")])
+        rows.append([
+            _btn("✏️ Название", f"admin:ui:menu:rename:{section}:{item_id}"),
+            _btn("⬆️", f"admin:ui:menu:move:{section}:{item_id}:up"),
+            _btn("⬇️", f"admin:ui:menu:move:{section}:{item_id}:down"),
+        ])
+        if kind in {"url", "telegram_url"}:
+            rows.append([_btn("🗑 Удалить кнопку", f"admin:ui:menu:delete:{section}:{item_id}")])
+    rows.append([_btn("➕ Добавить свою ссылку", f"admin:ui:menu:add:{section}")])
+    rows.append([_btn("👁 Предпросмотр", "admin:ui:preview")])
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_history_keyboard(versions: list[dict], back_callback: str = "admin:ui") -> InlineKeyboardMarkup:
+    rows = []
+    for version in versions[:8]:
+        published_at = version.get("published_at")
+        suffix = published_at.strftime("%d.%m %H:%M") if published_at else "без даты"
+        rows.append([_btn(f"↩️ Версия {version['version']} · {suffix}", f"admin:ui:rollback:{version['version']}")])
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_ui_preview_menu_keyboard(ui_config: dict | None, role: str | None, *, back_callback: str = "admin:ui:preview") -> InlineKeyboardMarkup:
+    entries = get_main_menu_entries(ui_config, role, is_platform_admin=role == "owner", include_disabled=False)
+    return _menu_entries_keyboard(entries, back_callback=back_callback, back_label="◀️ Назад к предпросмотру")

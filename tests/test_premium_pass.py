@@ -206,8 +206,8 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
         await admin_broadcast_confirm_text(confirm_callback, state, FakeDB())
 
         self.assertIn("Выберите получателей рассылки", message.edits[-1])
-        self.assertEqual(_keyboard_texts(message.reply_markups[-1])[0], "✅ Анна")
-        self.assertIn("Сейчас выбраны все ученики", message.edits[-1])
+        self.assertEqual(_keyboard_texts(message.reply_markups[-1])[0], "☐ Анна")
+        self.assertIn("Сейчас никто не выбран", message.edits[-1])
 
         toggle_callback = DummyCallbackQuery("bc_toggle:11", message=message, user_id=config.ADMIN_ID, bot=bot)
         await bc_toggle_recipient(toggle_callback, state)
@@ -304,6 +304,39 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Рассылка пока недоступна", callback.message.edits[-1])
         self.assertEqual(state.state, None)
+
+    async def test_level_test_broadcast_uses_account_scoped_ui_link(self):
+        state = DummyState()
+        bot = DummyBot()
+
+        class UiScopedDB:
+            def require_account_id(self):
+                return 7
+
+            async def get_resolved_ui_config(self, account_id):
+                return {
+                    "resolved": {
+                        "branding": {"display_name": "Scale English", "tone": "premium"},
+                        "contacts": {"level_test_url": "https://scale.example.com/test"},
+                        "requisites": {},
+                        "copy": {},
+                        "menu": {},
+                    }
+                }
+
+        callback = DummyCallbackQuery(
+            "broadcast:level_test",
+            message=DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot),
+            user_id=config.ADMIN_ID,
+            full_name="Admin",
+            bot=bot,
+        )
+
+        await admin_broadcast_select(callback, state, UiScopedDB())
+
+        self.assertIn("https://scale.example.com/test", callback.message.edits[-1])
+        data = await state.get_data()
+        self.assertIn("https://scale.example.com/test", data["broadcast_preview"])
 
 
 class BroadcastHelperTextTest(unittest.TestCase):

@@ -1,5 +1,6 @@
 import sys
 from datetime import datetime
+import inspect
 from pathlib import Path
 import unittest
 
@@ -13,6 +14,7 @@ from data import config
 from handlers.users.admin import admin_add_lesson_quick, admin_lesson_date_entered
 from handlers.users.admin_sections.common import restore_admin_view
 from handlers.users.admin_sections.homework import admin_add_homework_quick, admin_hw_deadline_entered, admin_hw_description_entered
+from handlers.users.admin_sections.students import _render_admin_students_page
 from handlers.users.admin_sections.payments import admin_add_payment_quick, admin_payment_amount_entered, admin_payment_count_entered
 from handlers.users.callbacks import process_homework, process_homework_list, process_notif_action, process_notif_manage, cancel_fsm
 from keyboards.inline import make_homework_list_keyboard
@@ -24,6 +26,18 @@ from utils.ui_text import (
     build_notifications_text,
     build_requisites_text,
 )
+
+
+def _call_with_optional_ui_overrides(func, *args, tone=None, copy=None, **kwargs):
+    params = inspect.signature(func).parameters
+    if tone is not None and "tone" in params:
+        kwargs["tone"] = tone
+    if copy is not None:
+        if "copy" in params:
+            kwargs["copy"] = copy
+        elif "copy_overrides" in params:
+            kwargs["copy_overrides"] = copy
+    return func(*args, **kwargs)
 
 
 def _keyboard_texts(reply_markup):
@@ -51,7 +65,8 @@ class WarmUiTextTest(unittest.TestCase):
         self.assertIn("01.04.2026 12:00", text)
 
     def test_contacts_and_requisites_texts_do_not_dump_raw_urls(self):
-        contacts_text = build_contacts_text(
+        contacts_text = _call_with_optional_ui_overrides(
+            build_contacts_text,
             {
                 "contacts": {
                     "phone": "+1 555 123",
@@ -62,10 +77,12 @@ class WarmUiTextTest(unittest.TestCase):
                 }
             },
             show_address=True,
+            tone="warm",
+            copy={"contacts_intro": "Контактный блок"},
         )
         requisites_text = build_requisites_text(
             {
-                "rate": "3000 ₽",
+                "rates": ["0 рублей / 60 минут", "0 рублей / 90 минут"],
                 "card": "4111 1111 1111 1111",
                 "sbp": "+7 900 000-00-00",
             }
@@ -73,8 +90,44 @@ class WarmUiTextTest(unittest.TestCase):
 
         self.assertIn("VK Звонок", contacts_text)
         self.assertIn("VPN", contacts_text)
+        self.assertIn("0 рублей / 60 минут", requisites_text)
         self.assertNotIn("https://", contacts_text)
         self.assertNotIn("https://", requisites_text)
+
+
+class StudentListUiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_student_list_uses_short_copy_and_card_buttons(self):
+        class FakeDB:
+            async def get_students_overview(self):
+                return [
+                    {
+                        "telegram_id": 555,
+                        "full_name": "Иван Петров",
+                        "language": "Английский",
+                        "level": "B1",
+                        "lesson_balance": 4,
+                        "lesson_format": "online",
+                        "first_lesson_date": datetime(2026, 4, 1),
+                        "next_lesson_date": datetime(2026, 4, 5, 14, 0),
+                    },
+                    {
+                        "telegram_id": 556,
+                        "full_name": "Анна Смирнова",
+                        "language": "Французский",
+                        "level": "A2",
+                        "lesson_balance": 2,
+                        "lesson_format": "offline",
+                        "first_lesson_date": datetime(2026, 3, 28),
+                        "next_lesson_date": None,
+                    },
+                ]
+
+        message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin")
+        await _render_admin_students_page(message, FakeDB(), page=0)
+
+        self.assertIn("Откройте карточку кнопкой ниже.", message.edits[-1])
+        self.assertIn("В списке оставлены только короткие ориентиры.", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].callback_data, "admin:student_card:555:0")
 
 
 class HomeworkAndNotificationUxTest(unittest.IsolatedAsyncioTestCase):

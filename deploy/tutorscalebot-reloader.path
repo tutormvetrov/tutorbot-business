@@ -1,0 +1,9 @@
+[Unit]
+Description=TutorScalebot restart trigger watcher
+
+[Path]
+PathChanged=/srv/tutorscalebot/.restart-trigger
+Unit=tutorscalebot-reloader.service
+
+[Install]
+WantedBy=multi-user.target

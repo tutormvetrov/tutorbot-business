@@ -1,5 +1,6 @@
 import sys
 from datetime import date, datetime
+import inspect
 from pathlib import Path
 import unittest
 
@@ -18,6 +19,18 @@ from utils.ui_text import (
 )
 
 
+def _call_with_optional_ui_overrides(func, *args, tone=None, copy=None, **kwargs):
+    params = inspect.signature(func).parameters
+    if tone is not None and "tone" in params:
+        kwargs["tone"] = tone
+    if copy is not None:
+        if "copy" in params:
+            kwargs["copy"] = copy
+        elif "copy_overrides" in params:
+            kwargs["copy_overrides"] = copy
+    return func(*args, **kwargs)
+
+
 class UITextTest(unittest.TestCase):
     def test_contacts_text_hides_raw_urls(self):
         info = {
@@ -30,7 +43,13 @@ class UITextTest(unittest.TestCase):
             }
         }
 
-        text = build_contacts_text(info, show_address=True)
+        text = _call_with_optional_ui_overrides(
+            build_contacts_text,
+            info,
+            show_address=True,
+            tone="warm",
+            copy={"contacts_intro": "Нужны быстрые способы связи."},
+        )
 
         self.assertIn("Контакты преподавателя", text)
         self.assertIn("Google Meet", text)
@@ -40,16 +59,29 @@ class UITextTest(unittest.TestCase):
     def test_requisites_text_hides_raw_booking_links(self):
         text = build_requisites_text(
             {
-                "rate": "3000 ₽ / 60 минут",
+                "rates": ["0 рублей / 60 минут", "0 рублей / 90 минут"],
                 "card": "1234 5678 9000 1111",
                 "sbp": "+7 900 000-00-00",
             }
         )
 
         self.assertIn("Реквизиты и стоимость", text)
+        self.assertIn("0 рублей / 60 минут", text)
         self.assertIn("Сообщить об оплате", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+
+    def test_contacts_text_is_ready_for_future_override_signature(self):
+        info = {"contacts": {"telegram": "@teacher"}}
+        text = _call_with_optional_ui_overrides(
+            build_contacts_text,
+            info,
+            tone="calm",
+            copy={"contacts_intro": "Связь через бот"},
+        )
+
+        self.assertIn("Контакты преподавателя", text)
+        self.assertIn("Telegram", text)
 
     def test_action_result_text_keeps_warm_service_structure(self):
         text = build_action_result_text(

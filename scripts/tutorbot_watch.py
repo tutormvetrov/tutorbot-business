@@ -8,8 +8,6 @@ from pathlib import Path
 
 
 ROOT = Path(os.getenv("TUTORBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
-SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot")
-SYSTEMD_SCOPE = os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system").strip().lower() or "system"
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",
@@ -32,11 +30,33 @@ ALLOWED_SUFFIXES = {".py", ".env", ".toml", ".ini", ".yaml", ".yml", ".json"}
 EXACT_FILENAMES = {".env"}
 POLL_INTERVAL_SECONDS = 1.0
 SETTLE_SECONDS = 0.75
-RESTART_COMMAND = (
-    ["systemctl", "--user", "restart", SERVICE_NAME]
-    if SYSTEMD_SCOPE == "user"
-    else ["systemctl", "restart", SERVICE_NAME]
-)
+
+
+def _service_name() -> str:
+    return os.getenv("TUTORBOT_SERVICE_NAME", "tutorscalebot").strip() or "tutorscalebot"
+
+
+def _systemd_scope() -> str:
+    return os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system").strip().lower() or "system"
+
+
+def _restart_mode() -> str:
+    configured = os.getenv("TUTORBOT_RESTART_MODE", "").strip().lower()
+    if configured:
+        return configured
+    return "trigger-file" if _systemd_scope() == "system" else "systemctl"
+
+
+def _restart_command() -> list[str]:
+    service_name = _service_name()
+    if _systemd_scope() == "user":
+        return ["systemctl", "--user", "restart", service_name]
+    return ["systemctl", "restart", service_name]
+
+
+def _reload_trigger_path() -> Path:
+    raw = os.getenv("TUTORBOT_RELOAD_TRIGGER", "").strip()
+    return Path(raw).expanduser().resolve() if raw else (ROOT / ".restart-trigger")
 
 
 def _should_watch(path: Path) -> bool:
@@ -96,13 +116,25 @@ def _summarize_changes(previous: dict[str, tuple[int, int]], current: dict[str, 
     return ", ".join(labels) + suffix
 
 
-def _restart_bot() -> bool:
-    result = subprocess.run(RESTART_COMMAND, check=False)
-    return result.returncode == 0
+def _restart_bot() -> tuple[bool, str]:
+    if _restart_mode() == "trigger-file":
+        trigger_path = _reload_trigger_path()
+        trigger_path.parent.mkdir(parents=True, exist_ok=True)
+        trigger_path.write_text(str(time.time_ns()), encoding="utf-8")
+        return True, f"restart requested via {trigger_path}"
+
+    result = subprocess.run(_restart_command(), check=False)
+    if result.returncode == 0:
+        return True, f"{_service_name()} restarted successfully"
+    return False, f"failed to restart {_service_name()}"
 
 def main() -> int:
     previous = _build_snapshot()
-    print(f"tutorscalebot-watch: monitoring project files for changes in {ROOT}", flush=True)
+    print(
+        f"tutorscalebot-watch: monitoring project files for changes in {ROOT} "
+        f"(restart mode: {_restart_mode()})",
+        flush=True,
+    )
 
     while True:
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -115,12 +147,13 @@ def main() -> int:
         change_summary = _summarize_changes(previous, settled)
         print(f"tutorscalebot-watch: restarting service after changes in {change_summary}", flush=True)
 
-        if _restart_bot():
+        restarted, detail = _restart_bot()
+        if restarted:
             previous = settled
-            print(f"tutorscalebot-watch: {SERVICE_NAME} restarted successfully", flush=True)
+            print(f"tutorscalebot-watch: {detail}", flush=True)
             continue
 
-        print(f"tutorscalebot-watch: failed to restart {SERVICE_NAME}", file=sys.stderr, flush=True)
+        print(f"tutorscalebot-watch: {detail}", file=sys.stderr, flush=True)
         previous = settled
 
 

@@ -17,6 +17,9 @@ from handlers.users.admin_sections.payments import admin_add_payment_quick, admi
 from handlers.users.admin_sections.students import (
     admin_student_format_toggle,
     admin_student_speech_style_toggle,
+    admin_student_actions,
+    admin_student_card,
+    admin_student_settings,
     admin_write_to_student_send,
     admin_write_to_student_start,
 )
@@ -263,6 +266,8 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(callback.answers[0].text, "Формат переключён: очно")
         self.assertTrue(message.edits)
+        self.assertIn("Настройки ученика", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].callback_data, "admin:student_format:555:0:online")
 
     async def test_student_speech_style_toggle_updates_db_and_rerenders_card(self):
         class FakeDB:
@@ -304,6 +309,71 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(callback.answers[0].text, "Обращение переключено: на ты")
         self.assertTrue(message.edits)
+        self.assertIn("Настройки ученика", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][1].callback_data, "admin:student_speech_style:555:0:formal")
+
+    async def test_student_card_has_main_actions_and_settings_subpages(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Иван Петров",
+                    "role": "student",
+                    "is_active": True,
+                    "language": "Английский",
+                    "level": "B1",
+                    "lesson_format": "online",
+                    "speech_style": "formal",
+                    "lesson_reminders": "enabled",
+                }
+
+            async def get_student_lesson_balance(self, student_id):
+                return 4
+
+            async def get_active_lessons(self, student_id):
+                return [{"lesson_date": datetime(2026, 4, 5, 14, 0)}]
+
+        bot = DummyBot()
+        message = DummyMessage(user_id=1, full_name="Admin", bot=bot)
+
+        await admin_student_card(
+            DummyCallbackQuery(
+                "admin:student_card:555:0",
+                message=message,
+                user_id=config.ADMIN_ID,
+                full_name="Admin",
+                bot=bot,
+            ),
+            FakeDB(),
+        )
+        self.assertIn("Иван Петров", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].callback_data, "admin:write_to_student:555:0")
+
+        await admin_student_actions(
+            DummyCallbackQuery(
+                "admin:student_actions:555:0",
+                message=message,
+                user_id=config.ADMIN_ID,
+                full_name="Admin",
+                bot=bot,
+            ),
+            FakeDB(),
+        )
+        self.assertIn("Быстрые действия", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].callback_data, "admin:quick:add_lesson:555:0")
+
+        await admin_student_settings(
+            DummyCallbackQuery(
+                "admin:student_settings:555:0",
+                message=message,
+                user_id=config.ADMIN_ID,
+                full_name="Admin",
+                bot=bot,
+            ),
+            FakeDB(),
+        )
+        self.assertIn("Настройки ученика", message.edits[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].callback_data, "admin:student_format:555:0:offline")
 
     async def test_admin_quick_payment_flow_restores_student_card(self):
         state = DummyState()
@@ -590,7 +660,7 @@ class HealthFormattingTest(unittest.TestCase):
         self.assertIn("Активных учеников: <b>7</b>", text)
         self.assertIn("01.04.2026 12:00", text)
         self.assertIn("Планировщик напоминаний", text)
-        self.assertIn("отправлено=2", text)
+        self.assertIn("отправлено: 2", text)
         self.assertIn("lesson_reminder", text)
         self.assertIn("error", text)
 

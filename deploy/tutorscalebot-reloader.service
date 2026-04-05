@@ -1,0 +1,6 @@
+[Unit]
+Description=TutorScalebot privileged restart bridge
+
+[Service]
+Type=oneshot
+ExecStart=/srv/tutorscalebot/scripts/tutorscalebot_reload.sh

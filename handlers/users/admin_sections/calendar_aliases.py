@@ -5,9 +5,9 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
 from keyboards.inline import (
-    back_to_admin_keyboard,
     make_calendar_alias_editor_keyboard,
     make_calendar_alias_student_keyboard,
+    make_back_button_keyboard,
     make_paywall_keyboard,
 )
 from states.registration import AdminCalendarAliases
@@ -91,14 +91,16 @@ def _render_calendar_alias_lines(links: list) -> list[str]:
     return lines
 
 
-def _build_calendar_sync_snapshot_lines() -> list[str]:
-    report = load_last_sync_report()
+def _build_calendar_sync_snapshot_lines(report: dict | None = None) -> list[str]:
+    report = report or {}
     if not report:
         return []
 
+    synced_at = report.get("synced_at_local") or report.get("synced_at") or "—"
     lines = [
         "",
         "Последний sync:",
+        f"• {html.escape(str(synced_at))}",
         (
             f"• {report.get('events_fetched', 0)} событий  |  "
             f"+{report.get('imported', 0)} / ♻️{report.get('updated', 0)} / "
@@ -118,6 +120,21 @@ def _build_calendar_sync_snapshot_lines() -> list[str]:
     return lines
 
 
+def make_calendar_alias_student_keyboard(students: list) -> types.InlineKeyboardMarkup:
+    rows = []
+    for student in students:
+        count = student.get("alias_count", 0)
+        label = f"{student['full_name']} ({count})" if count else student["full_name"]
+        if len(label) > 60:
+            label = label[:58] + "…"
+        rows.append([types.InlineKeyboardButton(text=label, callback_data=f"calendar_alias_student:{student['telegram_id']}")])
+    rows.append([types.InlineKeyboardButton(text="◀️ К системе", callback_data="admin:cat:system")])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+SYSTEM_BACK_KEYBOARD = make_back_button_keyboard("◀️ К системе", "admin:cat:system")
+
+
 @router.callback_query(lambda c: c.data == 'admin:calendar_aliases')
 async def admin_calendar_aliases(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not _is_admin(callback_query.from_user.id):
@@ -127,7 +144,7 @@ async def admin_calendar_aliases(callback_query: types.CallbackQuery, state: FSM
         snapshot = await db.get_account_billing_snapshot()
         await callback_query.message.edit_text(
             build_paywall_text(capability_label("calendar_sync"), snapshot, snapshot["product"]),
-            reply_markup=make_paywall_keyboard(back_callback="admin:cat:service", show_billing=True),
+            reply_markup=make_paywall_keyboard(back_callback="admin:cat:system", show_billing=True),
         )
         await callback_query.answer()
         return
@@ -136,7 +153,7 @@ async def admin_calendar_aliases(callback_query: types.CallbackQuery, state: FSM
     if not students:
         await callback_query.message.edit_text(
             "🧭 <b>Алиасы Calendar</b>\n\nНет активных учеников.",
-            reply_markup=back_to_admin_keyboard,
+            reply_markup=SYSTEM_BACK_KEYBOARD,
         )
         await callback_query.answer()
         return
@@ -162,6 +179,8 @@ async def admin_calendar_alias_student_selected(callback_query: types.CallbackQu
     student_id = int(callback_query.data.split(':')[1])
     student = await db.get_user(student_id)
     links = await db.get_calendar_student_links_for_student(student_id)
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
+    report = await load_last_sync_report(account_id)
     await state.set_state(AdminCalendarAliases.waiting_for_aliases)
     await state.update_data(student_id=student_id)
 
@@ -172,18 +191,20 @@ async def admin_calendar_alias_student_selected(callback_query: types.CallbackQu
         "Текущие правила:",
         *_render_calendar_alias_lines(links),
         "",
-        "Отправьте новые правила сообщением.",
+        "Как добавить новые правила:",
+        "• одна строка = одно правило",
+        "• обычная строка = alias",
+        "• <code>re:</code> в начале строки = regex",
+        "• <code>!replace</code> первой строкой = полная замена списка",
         "По умолчанию новые строки <b>добавляются</b> к уже существующим.",
-        "Если нужно полностью заменить список, начните сообщение со строки <code>!replace</code>.",
-        "Каждая следующая строка — отдельный alias.",
-        "Если нужен regex, начните строку с <code>re:</code>",
+        "Обычно хватает 2-3 обычных вариантов имени; regex нужен только для сложных случаев.",
         "",
         "Пример:",
         "<code>Анной Смирновой</code>",
         "<code>Анна Смирнова</code>",
         "<code>re:Урок с Анной Смирновой</code>",
     ]
-    lines.extend(_build_calendar_sync_snapshot_lines())
+    lines.extend(_build_calendar_sync_snapshot_lines(report))
     await callback_query.message.edit_text(
         "\n".join(lines),
         reply_markup=make_calendar_alias_editor_keyboard(student_id),
@@ -197,7 +218,7 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
     student_id = data.get("student_id")
     if not student_id:
         await state.clear()
-        await message.answer("⚠️ Ученик не выбран.", reply_markup=back_to_admin_keyboard)
+        await message.answer("⚠️ Ученик не выбран.", reply_markup=SYSTEM_BACK_KEYBOARD)
         return
 
     raw_text = (message.text or "").strip()
@@ -227,7 +248,7 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
         f"✅ <b>Алиасы сохранены</b> для {name}.\n\n"
         f"Режим: <b>{'полная замена' if replace_mode else 'добавление'}</b>\n"
         f"Всего активных правил: <b>{len(merged_items)}</b>",
-        reply_markup=back_to_admin_keyboard,
+        reply_markup=SYSTEM_BACK_KEYBOARD,
     )
     try:
         report = await sync_calendar_to_db(db)
@@ -235,13 +256,13 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
         logger.error("Ошибка автосинхронизации Calendar после сохранения алиасов: %s", exc)
         await message.answer(
             f"⚠️ Автосинхронизация не удалась:\n<code>{_q(exc)}</code>",
-            reply_markup=back_to_admin_keyboard,
+            reply_markup=SYSTEM_BACK_KEYBOARD,
         )
         return
 
     await message.answer(
         format_sync_report_html(report),
-        reply_markup=back_to_admin_keyboard,
+        reply_markup=SYSTEM_BACK_KEYBOARD,
     )
 
 
@@ -258,6 +279,6 @@ async def admin_calendar_aliases_clear(callback_query: types.CallbackQuery, stat
     await state.clear()
     await callback_query.message.edit_text(
         f"🗑 <b>Алиасы очищены</b> для {name}.",
-        reply_markup=back_to_admin_keyboard,
+        reply_markup=SYSTEM_BACK_KEYBOARD,
     )
     await callback_query.answer()

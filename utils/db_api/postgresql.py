@@ -71,7 +71,7 @@ class Database(
 
         async def _init_connection(connection: Connection):
             await connection.execute(f"SET search_path TO {self._build_search_path()};")
-            await connection.execute("SET TIME ZONE 'Europe/Moscow';")
+            await connection.execute("SET TIME ZONE 'UTC';")
 
         self.pool = await asyncpg.create_pool(
             user=config.PGUSER,

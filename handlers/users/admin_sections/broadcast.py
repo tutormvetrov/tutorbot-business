@@ -2,6 +2,7 @@ from aiogram import Router, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
+from utils.account_ui import build_teacher_info_from_ui, resolve_ui_payload, ui_tone
 from utils.brand import choose_tone_variant
 from keyboards.inline import (
     back_to_admin_keyboard,
@@ -39,12 +40,18 @@ from handlers.users.admin_sections.common import (
 router = Router()
 
 
-def build_illness_broadcast_text(_: str | None = None) -> str:
+def build_illness_broadcast_text(
+    _: str | None = None,
+    *,
+    info: dict | None = None,
+    tone: str | None = None,
+) -> str:
     follow_up = choose_tone_variant(
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
+        tone=tone,
     )
     return (
         "⚠️ <b>Внимание</b>\n\n"
@@ -54,12 +61,18 @@ def build_illness_broadcast_text(_: str | None = None) -> str:
     )
 
 
-def build_force_majeure_broadcast_text(_: str | None = None) -> str:
+def build_force_majeure_broadcast_text(
+    _: str | None = None,
+    *,
+    info: dict | None = None,
+    tone: str | None = None,
+) -> str:
     follow_up = choose_tone_variant(
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
         "Ниже предложены ближайшие варианты переноса.",
+        tone=tone,
     )
     return (
         "⚠️ <b>Внимание</b>\n\n"
@@ -76,12 +89,19 @@ BROADCAST_TEMPLATES = {
 }
 
 
-def _resolve_broadcast_text(kind: str | None, speech_style: str | None, fallback_text: str) -> str:
+def _resolve_broadcast_text(
+    kind: str | None,
+    speech_style: str | None,
+    fallback_text: str,
+    *,
+    info: dict | None = None,
+    tone: str | None = None,
+) -> str:
     if not kind:
         return fallback_text
     template = BROADCAST_TEMPLATES.get(kind)
     if callable(template):
-        return template(speech_style)
+        return template(speech_style, info=info, tone=tone)
     if isinstance(template, str) and template:
         return template
     return fallback_text
@@ -101,7 +121,6 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
         await state.clear()
         return
 
-    all_ids = [student['telegram_id'] for student in students]
     cache = [
         {
             'telegram_id': student['telegram_id'],
@@ -111,15 +130,14 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
         for student in students
     ]
     await state.update_data(
-        recipient_ids=all_ids,
+        recipient_ids=[],
         students_cache=cache,
         segment_mode_enabled=segments_enabled,
     )
     await state.set_state(AdminBroadcast.waiting_for_recipients)
 
-    total = len(all_ids)
-    text = admin_broadcast_recipients_text(broadcast_preview, total, total)
-    kb = make_recipient_select_keyboard(cache, set(all_ids), segments_enabled=segments_enabled)
+    text = admin_broadcast_recipients_text(broadcast_preview, 0, len(cache))
+    kb = make_recipient_select_keyboard(cache, set(), segments_enabled=segments_enabled)
     if hasattr(target, 'message'):
         await target.message.edit_text(text, reply_markup=kb)
         await target.answer()
@@ -183,7 +201,17 @@ async def admin_broadcast_select(callback_query: types.CallbackQuery, state: FSM
         return
 
     template = BROADCAST_TEMPLATES.get(kind, '')
-    broadcast_text = template() if callable(template) else template
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    broadcast_text = (
+        template(
+            None,
+            info=build_teacher_info_from_ui(ui_payload),
+            tone=ui_tone(ui_payload),
+        )
+        if callable(template)
+        else template
+    )
     await state.update_data(
         broadcast_kind=kind,
         broadcast_mode="text",

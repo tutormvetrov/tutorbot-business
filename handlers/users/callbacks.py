@@ -5,7 +5,6 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
 from data import config
-from data.config import load_teacher_info
 from handlers.users.admin_sections.common import is_admin, restore_admin_view
 from keyboards.inline import (
     freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
@@ -19,6 +18,12 @@ from keyboards.inline import (
     get_main_menu_keyboard,
 )
 from states.registration import FreezeConfirm, StudentReply
+from utils.account_ui import (
+    build_teacher_info_from_ui,
+    resolve_ui_payload,
+    ui_copy_text,
+    ui_tone,
+)
 from utils.db_api.postgresql import Database
 from utils.product_ui import build_workspace_menu_text
 from utils.reschedule import decode_reschedule_slot, format_reschedule_slot_label
@@ -33,6 +38,7 @@ from utils.ui_text import (
     build_freeze_success_text,
     build_homework_text,
     build_notifications_text,
+    build_parent_children_text,
     build_payment_text,
     build_profile_text,
     build_requisites_text,
@@ -62,6 +68,12 @@ LESSON_PRESENCE_LABELS = {
 }
 
 
+async def _operator_recipient_ids(db: Database) -> list[int]:
+    if hasattr(db, "get_account_operator_chat_ids"):
+        return await db.get_account_operator_chat_ids()
+    return [config.ADMIN_ID] if config.ADMIN_ID else []
+
+
 def _build_self_delete_warning(user, snapshot: dict) -> str:
     return build_self_delete_warning_text(user, snapshot)
 
@@ -75,9 +87,14 @@ async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, d
     role = user.get("role") if user else None
     account = await db.get_account()
     account_user = await db.get_account_user(callback_query.from_user.id, account["id"]) if account else None
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
     await callback_query.message.edit_text(
         build_workspace_menu_text(dict(account or {}), dict(account_user or {}), MAIN_MENU_TEXT),
-        reply_markup=get_main_menu_keyboard(role, is_platform_admin=callback_query.from_user.id == config.ADMIN_ID),
+        reply_markup=get_main_menu_keyboard(
+            role,
+            is_platform_admin=callback_query.from_user.id == config.ADMIN_ID,
+            ui_config=resolve_ui_payload(ui_snapshot),
+        ),
     )
     await callback_query.answer()
 
@@ -113,7 +130,7 @@ async def _render_profile_screen(message: types.Message, db: Database, user_id: 
         await message.edit_text(REGISTRATION_REQUIRED_TEXT, reply_markup=back_to_menu_keyboard)
         return
 
-    balance = await db.get_student_lesson_balance(user_id)
+    balance = await db.get_student_lesson_balance(user_id) if user["role"] == "student" else 0
     next_lessons = await db.get_active_lessons(user_id) if user["role"] == "student" else []
     next_lesson = next_lessons[0]["lesson_date"] if next_lessons and next_lessons[0].get("lesson_date") else None
 
@@ -152,6 +169,25 @@ async def _render_homework_list(message: types.Message, db: Database, user_id: i
         build_homework_text(items, status),
         reply_markup=make_homework_list_keyboard(items, status) if items else make_homework_filter_keyboard(status),
     )
+
+
+@router.callback_query(lambda c: c.data == 'parent:children')
+async def process_parent_children(callback_query: types.CallbackQuery, db: Database):
+    user = await db.get_user(callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.message.edit_text(
+            "ℹ️ Этот экран доступен только родителям.",
+            reply_markup=back_to_menu_keyboard,
+        )
+        await callback_query.answer()
+        return
+
+    children = await db.get_parent_children(callback_query.from_user.id)
+    await callback_query.message.edit_text(
+        build_parent_children_text(children),
+        reply_markup=back_to_menu_keyboard,
+    )
+    await callback_query.answer()
 
 @router.callback_query(lambda c: c.data in ['schedule', 'freeze', 'payment', 'profile'])
 async def process_menu_choice(callback_query: types.CallbackQuery, db: Database):
@@ -223,8 +259,9 @@ async def start_student_reply(callback_query: types.CallbackQuery, state: FSMCon
         await callback_query.answer("Ответ доступен только ученикам.", show_alert=True)
         return
 
-    if not config.ADMIN_ID:
-        await callback_query.answer("ADMIN_ID не настроен.", show_alert=True)
+    recipients = await _operator_recipient_ids(db)
+    if not recipients:
+        await callback_query.answer("В аккаунте не настроен получатель для таких сообщений.", show_alert=True)
         return
 
     parts = callback_query.data.split(':')
@@ -260,10 +297,11 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
         )
         return
 
-    if not config.ADMIN_ID:
+    recipients = await _operator_recipient_ids(db)
+    if not recipients:
         await state.clear()
         await message.answer(
-            "⚠️ ADMIN_ID не настроен. Сообщение не отправлено.",
+            "⚠️ В аккаунте пока не настроен получатель. Сообщение не отправлено.",
             reply_markup=back_to_menu_keyboard,
         )
         return
@@ -273,23 +311,30 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
     student_name = html.quote(user["full_name"] or message.from_user.full_name or str(message.from_user.id))
     username = f"@{message.from_user.username}" if message.from_user.username else "—"
 
-    await message.bot.send_message(
-        config.ADMIN_ID,
+    header_text = (
         "✉️ <b>Ответ от ученика</b>\n\n"
         f"👤 {student_name}\n"
         f"🆔 <code>{message.from_user.id}</code>\n"
         f"🔗 Username: {html.quote(username)}\n"
-        f"🧭 Контекст: <b>{context_label}</b>",
-        reply_markup=make_write_to_student_keyboard(message.from_user.id),
+        f"🧭 Контекст: <b>{context_label}</b>"
     )
-    try:
-        await message.copy_to(config.ADMIN_ID)
-    except Exception:
-        fallback_text = message.text or message.caption or "[Сообщение без текста]"
-        await message.bot.send_message(
-            config.ADMIN_ID,
-            f"⚠️ Не удалось переслать оригинал автоматически.\n\n{html.quote(fallback_text)}",
-        )
+    fallback_text = message.text or message.caption or "[Сообщение без текста]"
+    for chat_id in recipients:
+        try:
+            await message.bot.send_message(
+                chat_id,
+                header_text,
+                reply_markup=make_write_to_student_keyboard(message.from_user.id),
+            )
+            try:
+                await message.copy_to(chat_id)
+            except Exception:
+                await message.bot.send_message(
+                    chat_id,
+                    f"⚠️ Не удалось переслать оригинал автоматически.\n\n{html.quote(fallback_text)}",
+                )
+        except Exception as exc:
+            logger.warning("Не удалось отправить ответ ученика оператору %s: %s", chat_id, exc)
 
     await state.clear()
     await message.answer(
@@ -304,27 +349,34 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
 
 # ─── Contacts ─────────────────────────────────────────────────────────────────
 
-def _build_contacts_text(info: dict, show_address: bool = False) -> str:
-    return build_contacts_text(info, show_address=show_address)
+def _build_contacts_text(info: dict, show_address: bool = False, *, tone: str | None = None, intro_text: str | None = None) -> str:
+    return build_contacts_text(info, show_address=show_address, tone=tone, intro_text=intro_text)
 
 
 def _get_level_test_url(info: dict | None = None) -> str:
-    info = info or load_teacher_info()
+    info = info or {}
     contacts = info.get("contacts", {})
     return contacts.get("level_test_url", "") or info.get("level_test_url", "")
 
 
 def _get_project_site_url(info: dict | None = None) -> str:
-    info = info or load_teacher_info()
+    info = info or {}
     contacts = info.get("contacts", {})
     return contacts.get("project_site_url", "") or info.get("project_site_url", "")
 
 
 @router.callback_query(lambda c: c.data == 'contacts')
 async def process_contacts(callback_query: types.CallbackQuery, db: Database):
-    info = load_teacher_info()
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    info = build_teacher_info_from_ui(ui_payload)
     user = await db.get_user(callback_query.from_user.id)
-    text = _build_contacts_text(info, show_address=bool(user))
+    text = _build_contacts_text(
+        info,
+        show_address=bool(user),
+        tone=ui_tone(ui_payload),
+        intro_text=ui_copy_text(ui_payload, "contacts_intro"),
+    )
     contacts = info.get('contacts', {})
     kb = make_contacts_keyboard(
         booking_url=contacts.get('booking_url', ''),
@@ -338,9 +390,11 @@ async def process_contacts(callback_query: types.CallbackQuery, db: Database):
 
 
 @router.callback_query(lambda c: c.data.startswith('level_test:'))
-async def process_level_test_choice(callback_query: types.CallbackQuery):
+async def process_level_test_choice(callback_query: types.CallbackQuery, db: Database):
     action = callback_query.data.split(':', 1)[1]
-    url = _get_level_test_url()
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    url = _get_level_test_url(build_teacher_info_from_ui(ui_payload))
 
     if action == "now":
         if url:
@@ -461,9 +515,14 @@ async def process_requisites(callback_query: types.CallbackQuery, db: Database):
         await callback_query.answer()
         return
 
-    info = load_teacher_info()
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    info = build_teacher_info_from_ui(ui_payload)
     await callback_query.message.edit_text(
-        build_requisites_text(info.get("requisites", {})),
+        build_requisites_text(
+            info.get("requisites", {}),
+            footer_text=ui_copy_text(ui_payload, "requisites_footer"),
+        ),
         reply_markup=back_keyboard,
     )
     await callback_query.answer()
@@ -606,18 +665,26 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
     await state.clear()
 
     label = FREEZE_REASON_LABELS.get(reason, reason)
-    admin_id = config.ADMIN_ID
-    if admin_id:
-        await callback_query.bot.send_message(
-            admin_id,
-            f"❄️ <b>Новая заявка на заморозку!</b>\n\n"
-            f"👤 Ученик: {html.quote(callback_query.from_user.full_name)}\n"
-            f"Причина: {label}\n"
-            f"Затронуто занятий: {len(active)}",
-        )
+    for chat_id in await _operator_recipient_ids(db):
+        try:
+            await callback_query.bot.send_message(
+                chat_id,
+                f"❄️ <b>Новая заявка на заморозку!</b>\n\n"
+                f"👤 Ученик: {html.quote(callback_query.from_user.full_name)}\n"
+                f"Причина: {label}\n"
+                f"Затронуто занятий: {len(active)}",
+            )
+        except Exception as exc:
+            logger.warning("Не удалось отправить заявку на заморозку оператору %s: %s", chat_id, exc)
 
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
     await callback_query.message.edit_text(
-        build_freeze_success_text(label, state_data.get("freeze_active_count", len(active))),
+        build_freeze_success_text(
+            label,
+            state_data.get("freeze_active_count", len(active)),
+            tone=ui_tone(ui_payload),
+        ),
         reply_markup=back_to_menu_keyboard,
     )
     await callback_query.answer()
@@ -669,16 +736,16 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
 
     student = await db.get_user(user_id)
     student_name = html.quote(student['full_name']) if student else str(user_id)
-    if config.ADMIN_ID:
+    for chat_id in await _operator_recipient_ids(db):
         try:
             await callback_query.bot.send_message(
-                config.ADMIN_ID,
+                chat_id,
                 f"✅ <b>ДЗ выполнено!</b>\n\n"
                 f"👤 {student_name}\n"
                 f"📝 {title}",
             )
         except Exception as exc:
-            logger.warning("Не удалось отправить админу уведомление о выполненном ДЗ %s: %s", hw_id, exc)
+            logger.warning("Не удалось отправить account-scoped уведомление о выполненном ДЗ %s в %s: %s", hw_id, chat_id, exc)
 
     await _render_homework_list(callback_query.message, db, user_id, status="active")
     await callback_query.answer("Отметил как выполненное.")
@@ -743,10 +810,10 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
         ),
     )
 
-    if config.ADMIN_ID:
+    for chat_id in await _operator_recipient_ids(db):
         try:
             await callback_query.bot.send_message(
-                config.ADMIN_ID,
+                chat_id,
                 f"📩 <b>Ответ по занятию</b>\n\n"
                 f"👤 Ученик: {student_name}\n"
                 f"📅 Урок: <b>{lesson_time}</b>\n"
@@ -754,7 +821,7 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
                 reply_markup=make_write_to_student_keyboard(callback_query.from_user.id),
             )
         except Exception as exc:
-            logger.warning("Не удалось отправить админу статус по занятию %s: %s", lesson_id, exc)
+            logger.warning("Не удалось отправить account-scoped статус по занятию %s в %s: %s", lesson_id, chat_id, exc)
 
     await callback_query.answer("Ответ отправлен.")
 
@@ -798,17 +865,17 @@ async def process_reschedule_pick(callback_query: types.CallbackQuery, db: Datab
         reply_markup=back_to_menu_keyboard,
     )
 
-    if config.ADMIN_ID:
+    for chat_id in await _operator_recipient_ids(db):
         try:
             await callback_query.bot.send_message(
-                config.ADMIN_ID,
+                chat_id,
                 "🗓 <b>Выбран вариант переноса</b>\n\n"
                 f"👤 Ученик: <b>{html.quote(user['full_name'])}</b>\n"
                 f"📅 Предпочтительный слот: <b>{html.quote(slot_label)}</b>",
                 reply_markup=make_write_to_student_keyboard(callback_query.from_user.id),
             )
         except Exception as exc:
-            logger.warning("Не удалось отправить админу выбранный слот переноса: %s", exc)
+            logger.warning("Не удалось отправить account-scoped слот переноса в %s: %s", chat_id, exc)
 
     await callback_query.answer("Вариант отправлен.")
 

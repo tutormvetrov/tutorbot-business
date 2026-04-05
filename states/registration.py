@@ -70,3 +70,7 @@ class AdminCalendarAliases(StatesGroup):
 class AdminGroups(StatesGroup):
     waiting_for_name = State()
     waiting_for_student = State()
+
+
+class AdminUiEditor(StatesGroup):
+    waiting_for_value = State()

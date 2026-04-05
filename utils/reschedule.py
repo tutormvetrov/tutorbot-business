@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, time
 
-from data.config import load_teacher_info
-
-
 DEFAULT_RESCHEDULE_CONFIG = {
     "window_days": 14,
     "slot_count": 3,
@@ -28,7 +25,7 @@ def _parse_hhmm(value: str) -> time:
 
 
 def load_reschedule_config(info: dict | None = None) -> dict:
-    info = info or load_teacher_info()
+    info = info or {}
     payload = dict(DEFAULT_RESCHEDULE_CONFIG)
     payload.update(info.get("reschedule", {}))
     payload["weekly_windows"] = info.get("reschedule", {}).get(
@@ -60,8 +57,8 @@ def _round_up(value: datetime, step_minutes: int) -> datetime:
     return rounded
 
 
-async def find_next_free_reschedule_slots(db, now: datetime | None = None) -> list[datetime]:
-    config = load_reschedule_config()
+async def find_next_free_reschedule_slots(db, now: datetime | None = None, info: dict | None = None) -> list[datetime]:
+    config = load_reschedule_config(info)
     now = now or datetime.now()
     search_from = _round_up(now + timedelta(hours=config["min_lead_hours"]), config["slot_step_minutes"])
     search_until = search_from + timedelta(days=config["window_days"])

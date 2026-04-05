@@ -16,6 +16,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=TUTORBOT_ROOT=/srv/tutorscalebot
 Environment=TUTORBOT_SERVICE_NAME=tutorscalebot
 Environment=TUTORBOT_SYSTEMD_SCOPE=system
+Environment=TUTORBOT_RESTART_MODE=trigger-file
+Environment=TUTORBOT_RELOAD_TRIGGER=/srv/tutorscalebot/.restart-trigger
 
 [Install]
 WantedBy=multi-user.target

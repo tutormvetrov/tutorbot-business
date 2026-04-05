@@ -14,6 +14,7 @@ from keyboards.inline import (
 )
 from states.registration import AdminAddPayment
 from utils.db_api.postgresql import Database
+from utils.domain_errors import BusinessRuleError
 from utils.ui_text import (
     ADMIN_ADD_PAYMENT_AMOUNT_INVALID_TEXT,
     ADMIN_ADD_PAYMENT_AMOUNT_PROMPT_TEXT,
@@ -121,7 +122,11 @@ async def admin_payment_delete(callback_query: types.CallbackQuery, db: Database
         await callback_query.answer()
         return
 
-    await db.delete_payment(payment_id)
+    try:
+        await db.delete_payment(payment_id)
+    except BusinessRuleError as exc:
+        await callback_query.answer(str(exc), show_alert=True)
+        return
     await _render_admin_payments(callback_query.message, db, student_id, page=page)
     await callback_query.answer("Оплата удалена.")
 

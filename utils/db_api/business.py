@@ -1,11 +1,134 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
+from copy import deepcopy
 from secrets import token_urlsafe
 
-from data.config import get_product_name, load_product_config
+from data.config import get_product_name, load_product_config, load_ui_seed_defaults
 from utils.capabilities import build_default_trial_window, normalize_plan_code, resolve_subscription
+from utils.domain_errors import CapabilityLockedError, QuotaExceededError, ValidationError
+from utils.timezone import account_now_naive, account_today
 from utils.workspace import workspace_role_label
+
+
+_ALLOWED_MENU_CALLBACKS = {
+    "back_to_menu",
+    "contacts",
+    "freeze",
+    "homework",
+    "parent:children",
+    "payment",
+    "profile",
+    "requisites",
+    "schedule",
+    "product:hub",
+    "product:plans",
+    "product:included",
+    "product:subscription",
+    "product:trial",
+    "product:team",
+    "admin:setup",
+    "workspace:selector",
+    "admin:home",
+    "admin:team",
+    "admin:billing",
+    "admin:invites",
+    "admin:support",
+    "admin:analytics",
+    "admin:cat:account",
+    "admin:cat:service",
+    "admin:cat:system",
+    "admin:cat:students",
+    "admin:cat:education",
+    "admin:cat:communication",
+    "admin:sync:system",
+    "admin:sync:service",
+    "admin:calendar_aliases",
+    "admin:calendar_report",
+    "admin:health",
+    "admin:ui",
+    "admin:brand_tone",
+    "admin:notes",
+}
+
+ACCOUNT_USER_ROLES = {"owner", "manager", "assistant", "student", "parent"}
+INVITEABLE_ACCOUNT_ROLES = {"owner", "manager", "assistant"}
+TEAM_MEMBER_ROLES = {"owner", "manager", "assistant"}
+MANAGED_TEAM_ROLES = {"manager", "assistant"}
+OPERATOR_NOTIFICATION_ROLES = ("owner", "manager", "assistant")
+
+
+def _json_payload(value):
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return deepcopy(value)
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return deepcopy(value)
+
+
+def _deep_merge(base, overlay):
+    if not isinstance(base, dict):
+        base = {}
+    result = deepcopy(base)
+    if not isinstance(overlay, dict):
+        return result
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
+def _normalize_menu_item(item: dict, section: str, index: int) -> dict:
+    if not isinstance(item, dict):
+        raise ValueError(f"Menu item in '{section}' must be an object.")
+    item_id = str(item.get("id") or f"{section}_{index}").strip()
+    label = str(item.get("label") or "").strip()
+    value = str(item.get("value") or "").strip()
+    kind = str(item.get("kind") or "callback").strip().lower()
+    enabled = bool(item.get("enabled", True))
+    order = int(item.get("order", index))
+    if not item_id:
+        raise ValueError(f"Menu item in '{section}' is missing id.")
+    if not label:
+        raise ValueError(f"Menu item '{item_id}' in '{section}' is missing label.")
+    if kind not in {"callback", "url", "telegram_url"}:
+        raise ValueError(f"Menu item '{item_id}' in '{section}' has unsupported kind '{kind}'.")
+    if not value:
+        raise ValueError(f"Menu item '{item_id}' in '{section}' is missing value.")
+    if kind == "callback" and value not in _ALLOWED_MENU_CALLBACKS:
+        raise ValueError(f"Menu item '{item_id}' in '{section}' uses unsupported callback '{value}'.")
+    return {
+        "id": item_id,
+        "label": label,
+        "value": value,
+        "kind": kind,
+        "enabled": enabled,
+        "order": order,
+    }
+
+
+def _normalize_ui_payload(payload: dict, defaults: dict | None = None) -> dict:
+    merged = _deep_merge(defaults or {}, _json_payload(payload))
+    menu = merged.get("menu")
+    if isinstance(menu, dict):
+        normalized_menu = {}
+        for section, items in menu.items():
+            if not isinstance(items, list):
+                raise ValueError(f"Menu section '{section}' must be a list.")
+            normalized_menu[section] = [
+                _normalize_menu_item(item, section, index)
+                for index, item in enumerate(items, start=1)
+            ]
+        merged["menu"] = normalized_menu
+    return merged
 
 
 class DatabaseBusinessMixin:
@@ -116,6 +239,256 @@ class DatabaseBusinessMixin:
             """,
             fetchrow=True,
         )
+
+    def _normalize_account_role(self, role: str | None, *, invite_only: bool = False) -> str:
+        normalized = (role or "").strip().lower()
+        allowed_roles = INVITEABLE_ACCOUNT_ROLES if invite_only else ACCOUNT_USER_ROLES
+        if normalized not in allowed_roles:
+            raise ValidationError("Недопустимая роль аккаунта.")
+        return normalized
+
+    async def list_active_accounts(self) -> list:
+        return await self.execute(
+            """
+            SELECT *
+            FROM accounts
+            WHERE status = 'active'
+            ORDER BY
+                CASE WHEN is_default THEN 0 ELSE 1 END,
+                id
+            """,
+            fetch=True,
+        )
+
+    async def get_account_timezone(self, account_id: int | None = None) -> str:
+        target_account_id = int(account_id or self.require_account_id())
+        row = await self.execute(
+            """
+            SELECT timezone
+            FROM accounts
+            WHERE id = $1
+            """,
+            target_account_id,
+            fetchrow=True,
+        )
+        return str(row["timezone"] if row and row["timezone"] else "Europe/Moscow")
+
+    async def get_account_now(self, account_id: int | None = None) -> datetime:
+        timezone_name = await self.get_account_timezone(account_id=account_id)
+        return account_now_naive(timezone_name)
+
+    async def get_account_today(self, account_id: int | None = None):
+        timezone_name = await self.get_account_timezone(account_id=account_id)
+        return account_today(timezone_name)
+
+    async def _get_subscription_record_for_account(self, account_id: int, connection=None):
+        query = """
+            SELECT s.*, p.display_name AS plan_display_name, p.description AS plan_description
+            FROM subscriptions s
+            JOIN plans p ON p.code = s.plan_code
+            WHERE s.account_id = $1
+        """
+        row = await (
+            connection.fetchrow(query, account_id)
+            if connection is not None
+            else self.execute(query, account_id, fetchrow=True)
+        )
+        return dict(row) if row else None
+
+    async def _get_feature_overrides_for_account(self, account_id: int, connection=None) -> dict[str, bool]:
+        query = """
+            SELECT capability, is_enabled
+            FROM account_feature_overrides
+            WHERE account_id = $1
+            ORDER BY capability
+        """
+        rows = await (
+            connection.fetch(query, account_id)
+            if connection is not None
+            else self.execute(query, account_id, fetch=True)
+        )
+        return {row["capability"]: bool(row["is_enabled"]) for row in rows}
+
+    async def _resolve_subscription_for_account(self, account_id: int, connection=None):
+        subscription = await self._get_subscription_record_for_account(account_id, connection=connection)
+        overrides = await self._get_feature_overrides_for_account(account_id, connection=connection)
+        return resolve_subscription(subscription, overrides=overrides), overrides
+
+    async def _count_active_team_members(self, account_id: int, connection=None) -> int:
+        query = """
+            SELECT COUNT(*)::int
+            FROM account_users au
+            JOIN accounts a
+              ON a.id = au.account_id
+            WHERE au.account_id = $1
+              AND au.status = 'active'
+              AND a.status = 'active'
+              AND au.role = ANY($2::text[])
+        """
+        params = (account_id, list(TEAM_MEMBER_ROLES))
+        value = await (
+            connection.fetchval(query, *params)
+            if connection is not None
+            else self.execute(query, *params, fetchval=True)
+        )
+        return int(value or 0)
+
+    async def _count_active_team_invites(self, account_id: int, connection=None) -> int:
+        query = """
+            SELECT COUNT(*)::int
+            FROM account_invites
+            WHERE account_id = $1
+              AND role = ANY($2::text[])
+              AND status = 'active'
+              AND redeemed_at IS NULL
+              AND (expires_at IS NULL OR expires_at >= CURRENT_TIMESTAMP)
+        """
+        params = (account_id, list(MANAGED_TEAM_ROLES))
+        value = await (
+            connection.fetchval(query, *params)
+            if connection is not None
+            else self.execute(query, *params, fetchval=True)
+        )
+        return int(value or 0)
+
+    async def get_account_operator_chat_ids(
+        self,
+        roles: tuple[str, ...] = OPERATOR_NOTIFICATION_ROLES,
+        account_id: int | None = None,
+    ) -> list[int]:
+        target_account_id = int(account_id or self.require_account_id())
+        rows = await self.execute(
+            """
+            SELECT DISTINCT au.telegram_id, au.role
+            FROM account_users au
+            JOIN accounts a
+              ON a.id = au.account_id
+            WHERE au.account_id = $1
+              AND au.status = 'active'
+              AND a.status = 'active'
+              AND au.telegram_id IS NOT NULL
+              AND au.role = ANY($2::text[])
+            ORDER BY
+                CASE au.role
+                    WHEN 'owner' THEN 1
+                    WHEN 'manager' THEN 2
+                    WHEN 'assistant' THEN 3
+                    ELSE 9
+                END,
+                au.telegram_id
+            """,
+            target_account_id,
+            list(roles),
+            fetch=True,
+        )
+        recipients = [int(row["telegram_id"]) for row in rows if row["telegram_id"]]
+        if recipients:
+            return recipients
+        account = await self.get_account_by_id(target_account_id)
+        owner_user_id = (account or {}).get("owner_user_id") if account else None
+        return [int(owner_user_id)] if owner_user_id else []
+
+    async def ensure_student_capacity(
+        self,
+        telegram_id: int | None = None,
+        *,
+        is_internal: bool = False,
+        account_id: int | None = None,
+    ):
+        if is_internal:
+            return
+        target_account_id = int(account_id or self.require_account_id())
+        token = None
+        if account_id is not None:
+            token = self.push_account_context(target_account_id)
+        try:
+            snapshot = await self.get_account_billing_snapshot()
+            limit = snapshot["resolved"].limits.get("active_students")
+            if limit is None:
+                return
+            existing = await self.get_user(telegram_id) if telegram_id is not None else None
+            if existing:
+                existing = dict(existing)
+            if (
+                existing
+                and existing["role"] == "student"
+                and existing["is_active"]
+                and not bool(existing.get("is_internal_account"))
+            ):
+                return
+            analytics = await self.get_account_analytics_snapshot()
+            if int(analytics.get("active_students") or 0) >= int(limit):
+                raise QuotaExceededError(
+                    f"Лимит активных учеников для текущего тарифа достигнут: {limit}."
+                )
+        finally:
+            if token is not None:
+                self.reset_account_context(token)
+
+    async def ensure_team_member_capacity(
+        self,
+        role: str,
+        *,
+        telegram_id: int | None = None,
+        account_id: int | None = None,
+        include_pending_invites: bool = False,
+        connection=None,
+    ):
+        normalized_role = self._normalize_account_role(role)
+        if normalized_role not in MANAGED_TEAM_ROLES:
+            return
+        target_account_id = int(account_id or self.require_account_id())
+        resolved, _ = await self._resolve_subscription_for_account(target_account_id, connection=connection)
+        if not resolved.capabilities.get("team_roles", False):
+            raise CapabilityLockedError("Командные роли недоступны на текущем тарифе.")
+        limit = resolved.limits.get("team_members")
+        if limit is None:
+            return
+        existing = None
+        if telegram_id is not None:
+            existing_query = """
+                SELECT role, status
+                FROM account_users
+                WHERE account_id = $1
+                  AND telegram_id = $2
+                ORDER BY id
+                LIMIT 1
+            """
+            existing = await (
+                connection.fetchrow(existing_query, target_account_id, telegram_id)
+                if connection is not None
+                else self.execute(existing_query, target_account_id, telegram_id, fetchrow=True)
+            )
+        if existing:
+            existing = dict(existing)
+        if existing and existing["status"] == "active" and existing["role"] in TEAM_MEMBER_ROLES:
+            return
+        current_members = await self._count_active_team_members(target_account_id, connection=connection)
+        if include_pending_invites:
+            current_members += await self._count_active_team_invites(target_account_id, connection=connection)
+        if int(current_members) >= int(limit):
+            raise QuotaExceededError(
+                f"Лимит командных слотов для текущего тарифа достигнут: {limit}."
+            )
+
+    async def ensure_group_capacity(self, *, account_id: int | None = None):
+        target_account_id = int(account_id or self.require_account_id())
+        token = None
+        if account_id is not None:
+            token = self.push_account_context(target_account_id)
+        try:
+            snapshot = await self.get_account_billing_snapshot()
+            if not snapshot["resolved"].capabilities.get("groups", False):
+                raise CapabilityLockedError("Группы недоступны на текущем тарифе.")
+            limit = snapshot["resolved"].limits.get("groups")
+            if limit is None:
+                return
+            analytics = await self.get_account_analytics_snapshot()
+            if int(analytics.get("active_groups") or 0) >= int(limit):
+                raise QuotaExceededError(f"Лимит групп для текущего тарифа достигнут: {limit}.")
+        finally:
+            if token is not None:
+                self.reset_account_context(token)
 
     async def get_account_by_id(self, account_id: int):
         return await self.execute(
@@ -328,26 +701,6 @@ class DatabaseBusinessMixin:
                 account_user = memberships[0]
                 account = await self.get_account_by_id(account_user["account_id"])
 
-        if account is None and telegram_id is not None:
-            user_account = await self.execute(
-                """
-                SELECT account_id
-                FROM users
-                WHERE telegram_id = $1
-                  AND account_id IS NOT NULL
-                ORDER BY account_id
-                LIMIT 1
-                """,
-                telegram_id,
-                fetchrow=True,
-            )
-            if user_account:
-                account = await self.get_account_by_id(user_account["account_id"])
-                if identity and identity.get("id"):
-                    account_user = await self.get_account_user_by_identity(identity["id"], user_account["account_id"])
-                if not account_user:
-                    account_user = await self.get_account_user(telegram_id, user_account["account_id"])
-
         if account is None:
             account = await self.get_default_account()
 
@@ -458,7 +811,9 @@ class DatabaseBusinessMixin:
         )
 
     async def ensure_account_user(self, telegram_id: int, role: str):
+        role = self._normalize_account_role(role)
         account_id = self.require_account_id()
+        await self.ensure_team_member_capacity(role, telegram_id=telegram_id, account_id=account_id)
         identity = await self.ensure_global_identity(telegram_id)
         identity_id = identity["id"] if identity else None
         await self.execute(
@@ -542,6 +897,344 @@ class DatabaseBusinessMixin:
     async def get_feature_overrides(self) -> dict[str, bool]:
         rows = await self.get_feature_override_rows()
         return {row["capability"]: bool(row["is_enabled"]) for row in rows}
+
+    async def _get_ui_config_record(self, account_id: int):
+        return await self.execute(
+            """
+            SELECT *
+            FROM account_ui_configs
+            WHERE account_id = $1
+            """,
+            account_id,
+            fetchrow=True,
+        )
+
+    async def _get_ui_version_record(self, account_id: int, version: int):
+        return await self.execute(
+            """
+            SELECT *
+            FROM account_ui_versions
+            WHERE account_id = $1
+              AND version = $2
+            """,
+            account_id,
+            version,
+            fetchrow=True,
+        )
+
+    def _build_ui_snapshot(self, account: dict | None, record, defaults: dict, *, resolved_payload: dict) -> dict:
+        draft_payload = _normalize_ui_payload(record["draft_payload"], defaults) if record else deepcopy(defaults)
+        published_payload = _normalize_ui_payload(record["published_payload"], defaults) if record else deepcopy(defaults)
+        return {
+            "account": dict(account) if account else {},
+            "defaults": deepcopy(defaults),
+            "draft": draft_payload,
+            "published": published_payload,
+            "resolved": _normalize_ui_payload(resolved_payload, defaults),
+            "draft_version": int(record["draft_version"]) if record and record.get("draft_version") is not None else 1,
+            "published_version": int(record["published_version"]) if record and record.get("published_version") is not None else 1,
+            "updated_by": record["updated_by"] if record else None,
+            "published_by": record["published_by"] if record else None,
+            "updated_at": record["updated_at"] if record else None,
+            "published_at": record["published_at"] if record else None,
+            "source": "database" if record else "defaults",
+        }
+
+    async def get_resolved_ui_config(self, account_id: int):
+        defaults = load_ui_seed_defaults()
+        account = await self.get_account_by_id(account_id)
+        record = await self._get_ui_config_record(account_id)
+        if not record:
+            return self._build_ui_snapshot(account, None, defaults, resolved_payload=defaults)
+        published = _normalize_ui_payload(record["published_payload"], defaults)
+        return self._build_ui_snapshot(account, record, defaults, resolved_payload=published)
+
+    async def get_ui_draft(self, account_id: int):
+        defaults = load_ui_seed_defaults()
+        account = await self.get_account_by_id(account_id)
+        record = await self._get_ui_config_record(account_id)
+        if not record:
+            return self._build_ui_snapshot(account, None, defaults, resolved_payload=defaults)
+        draft = _normalize_ui_payload(record["draft_payload"], defaults)
+        return self._build_ui_snapshot(account, record, defaults, resolved_payload=draft)
+
+    async def _ensure_ui_config_record(self, account_id: int):
+        defaults = load_ui_seed_defaults()
+        defaults_json = json.dumps(defaults, ensure_ascii=False)
+        await self.execute(
+            """
+            INSERT INTO account_ui_configs (
+                account_id,
+                draft_payload,
+                published_payload,
+                draft_version,
+                published_version,
+                updated_at,
+                published_at,
+                created_at
+            )
+            VALUES (
+                $1,
+                $2::jsonb,
+                $2::jsonb,
+                1,
+                1,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (account_id) DO UPDATE
+            SET draft_payload = CASE
+                    WHEN account_ui_configs.draft_payload = '{}'::jsonb THEN EXCLUDED.draft_payload
+                    ELSE account_ui_configs.draft_payload
+                END,
+                published_payload = CASE
+                    WHEN account_ui_configs.published_payload = '{}'::jsonb THEN EXCLUDED.published_payload
+                    ELSE account_ui_configs.published_payload
+                END,
+                draft_version = CASE
+                    WHEN account_ui_configs.draft_payload = '{}'::jsonb
+                     AND account_ui_configs.published_payload = '{}'::jsonb
+                    THEN 1
+                    ELSE account_ui_configs.draft_version
+                END,
+                published_version = CASE
+                    WHEN account_ui_configs.draft_payload = '{}'::jsonb
+                     AND account_ui_configs.published_payload = '{}'::jsonb
+                    THEN 1
+                    ELSE account_ui_configs.published_version
+                END,
+                published_at = CASE
+                    WHEN account_ui_configs.published_payload = '{}'::jsonb
+                    THEN CURRENT_TIMESTAMP
+                    ELSE account_ui_configs.published_at
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            account_id,
+            defaults_json,
+            execute=True,
+        )
+        await self.execute(
+            """
+            INSERT INTO account_ui_versions (
+                account_id,
+                version,
+                payload,
+                published_by,
+                published_at,
+                created_at
+            )
+            VALUES ($1, 1, $2::jsonb, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (account_id, version) DO NOTHING
+            """,
+            account_id,
+            defaults_json,
+            execute=True,
+        )
+
+    async def save_ui_draft(self, account_id: int, payload: dict, updated_by: int | None):
+        defaults = load_ui_seed_defaults()
+        await self._ensure_ui_config_record(account_id)
+        record = await self._get_ui_config_record(account_id)
+        current = _normalize_ui_payload(record["draft_payload"], defaults) if record else deepcopy(defaults)
+        draft_version = int(record["draft_version"] or record["published_version"] or 1) + 1 if record else 2
+        published_version = int(record["published_version"] or 1) if record else 1
+
+        merged = _normalize_ui_payload(_deep_merge(current, payload), defaults)
+        payload_json = json.dumps(merged, ensure_ascii=False)
+
+        await self.execute(
+            """
+            INSERT INTO account_ui_configs (
+                account_id,
+                draft_payload,
+                published_payload,
+                draft_version,
+                published_version,
+                updated_by,
+                updated_at,
+                published_at,
+                created_at
+            )
+            VALUES (
+                $1,
+                $2::jsonb,
+                $3::jsonb,
+                $4,
+                $5,
+                $6,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (account_id) DO UPDATE
+            SET draft_payload = EXCLUDED.draft_payload,
+                draft_version = EXCLUDED.draft_version,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            account_id,
+            payload_json,
+            json.dumps(_normalize_ui_payload(record["published_payload"], defaults), ensure_ascii=False) if record else json.dumps(defaults, ensure_ascii=False),
+            draft_version,
+            published_version,
+            updated_by,
+            execute=True,
+        )
+        return await self.get_ui_draft(account_id)
+
+    async def publish_ui_draft(self, account_id: int, published_by: int | None):
+        defaults = load_ui_seed_defaults()
+        await self._ensure_ui_config_record(account_id)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                record = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM account_ui_configs
+                    WHERE account_id = $1
+                    FOR UPDATE
+                    """,
+                    account_id,
+                )
+                if not record:
+                    raise RuntimeError("UI config record could not be initialized.")
+
+                current_draft = _normalize_ui_payload(record["draft_payload"], defaults)
+                current_published_version = int(record["published_version"] or 1)
+                new_version = current_published_version + 1
+                payload_json = json.dumps(current_draft, ensure_ascii=False)
+                await conn.execute(
+                    """
+                    INSERT INTO account_ui_versions (
+                        account_id,
+                        version,
+                        payload,
+                        published_by,
+                        published_at,
+                        created_at
+                    )
+                    VALUES ($1, $2, $3::jsonb, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    account_id,
+                    new_version,
+                    payload_json,
+                    published_by,
+                )
+                await conn.execute(
+                    """
+                    UPDATE account_ui_configs
+                    SET published_payload = $2::jsonb,
+                        published_version = $3,
+                        published_by = $4,
+                        published_at = CURRENT_TIMESTAMP,
+                        updated_by = COALESCE($4, updated_by),
+                        draft_version = GREATEST(draft_version, $3),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE account_id = $1
+                    """,
+                    account_id,
+                    payload_json,
+                    new_version,
+                    published_by,
+                )
+        return await self.get_resolved_ui_config(account_id)
+
+    async def list_ui_versions(self, account_id: int):
+        defaults = load_ui_seed_defaults()
+        rows = await self.execute(
+            """
+            SELECT *
+            FROM account_ui_versions
+            WHERE account_id = $1
+            ORDER BY version DESC, id DESC
+            """,
+            account_id,
+            fetch=True,
+        )
+        result = []
+        for row in rows:
+            payload = _normalize_ui_payload(row["payload"], defaults)
+            result.append({
+                "id": row["id"],
+                "account_id": row["account_id"],
+                "version": row["version"],
+                "payload": payload,
+                "published_by": row["published_by"],
+                "published_at": row["published_at"],
+                "created_at": row["created_at"],
+            })
+        return result
+
+    async def rollback_ui_version(self, account_id: int, version: int, actor_id: int | None):
+        defaults = load_ui_seed_defaults()
+        await self._ensure_ui_config_record(account_id)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                current = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM account_ui_configs
+                    WHERE account_id = $1
+                    FOR UPDATE
+                    """,
+                    account_id,
+                )
+                target = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM account_ui_versions
+                    WHERE account_id = $1
+                      AND version = $2
+                    """,
+                    account_id,
+                    version,
+                )
+                if not current:
+                    raise RuntimeError("UI config record could not be initialized.")
+                if not target:
+                    raise ValueError(f"UI version {version} not found for account {account_id}.")
+
+                payload = _normalize_ui_payload(target["payload"], defaults)
+                payload_json = json.dumps(payload, ensure_ascii=False)
+                new_version = int(current["published_version"] or 1) + 1
+                await conn.execute(
+                    """
+                    INSERT INTO account_ui_versions (
+                        account_id,
+                        version,
+                        payload,
+                        published_by,
+                        published_at,
+                        created_at
+                    )
+                    VALUES ($1, $2, $3::jsonb, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    account_id,
+                    new_version,
+                    payload_json,
+                    actor_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE account_ui_configs
+                    SET draft_payload = $2::jsonb,
+                        published_payload = $2::jsonb,
+                        draft_version = GREATEST(draft_version, $3),
+                        published_version = $3,
+                        updated_by = COALESCE($4, updated_by),
+                        published_by = $4,
+                        published_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE account_id = $1
+                    """,
+                    account_id,
+                    payload_json,
+                    new_version,
+                    actor_id,
+                )
+        return await self.get_resolved_ui_config(account_id)
 
     async def get_account_billing_snapshot(self) -> dict:
         subscription = await self.get_subscription_record()
@@ -698,6 +1391,12 @@ class DatabaseBusinessMixin:
         label: str = "",
         days_valid: int = 7,
     ):
+        role = self._normalize_account_role(role, invite_only=True)
+        await self.ensure_team_member_capacity(
+            role,
+            account_id=self.require_account_id(),
+            include_pending_invites=True,
+        )
         token = token_urlsafe(16)
         expires_at = datetime.now() + timedelta(days=max(int(days_valid), 1))
         await self.execute(
@@ -787,6 +1486,13 @@ class DatabaseBusinessMixin:
                 )
                 if not invite:
                     return None
+                invite_role = self._normalize_account_role(invite["role"], invite_only=True)
+                await self.ensure_team_member_capacity(
+                    invite_role,
+                    telegram_id=telegram_id,
+                    account_id=invite["account_id"],
+                    connection=conn,
+                )
 
                 identity_id = await conn.fetchval(
                     """
@@ -827,7 +1533,7 @@ class DatabaseBusinessMixin:
                     telegram_id,
                     full_name or "",
                     username or "",
-                    invite["role"],
+                    invite_role,
                 )
                 await conn.execute(
                     """
@@ -842,7 +1548,7 @@ class DatabaseBusinessMixin:
                     invite["account_id"],
                     identity_id,
                     telegram_id,
-                    invite["role"],
+                    invite_role,
                 )
                 await conn.execute(
                     """
@@ -855,7 +1561,7 @@ class DatabaseBusinessMixin:
                     identity_id,
                     invite["account_id"],
                 )
-                if invite["role"] == "owner":
+                if invite_role == "owner":
                     await conn.execute(
                         """
                         UPDATE accounts
@@ -1257,6 +1963,7 @@ class DatabaseBusinessMixin:
         )
 
     async def create_group(self, name: str, description: str = "") -> int:
+        await self.ensure_group_capacity(account_id=self.require_account_id())
         return await self.execute(
             """
             INSERT INTO groups (account_id, name, description)
@@ -1320,8 +2027,9 @@ class DatabaseBusinessMixin:
             execute=True,
         )
 
-    async def get_broadcast_segment_students(self, segment: str):
+    async def get_broadcast_segment_students(self, segment: str, reference_now: datetime | None = None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
         if segment == "zero_balance":
             return await self.execute(
                 """
@@ -1364,11 +2072,12 @@ class DatabaseBusinessMixin:
                         AND l.account_id = $1
                         AND l.status = 'active'
                         AND l.lesson_date IS NOT NULL
-                        AND l.lesson_date >= NOW()
+                        AND l.lesson_date >= $2
                   )
                 ORDER BY u.full_name
                 """,
                 account_id,
+                current_local,
                 fetch=True,
             )
         if segment == "with_parents":
@@ -1406,7 +2115,11 @@ class DatabaseBusinessMixin:
             fetch=True,
         )
 
-    async def get_account_analytics_snapshot(self):
+    async def get_account_analytics_snapshot(self, reference_now: datetime | None = None):
+        account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
+        next_week = current_local + timedelta(days=7)
+        last_30_days = current_local - timedelta(days=30)
         return await self.execute(
             """
             SELECT
@@ -1436,8 +2149,8 @@ class DatabaseBusinessMixin:
                     FROM lessons l
                     WHERE l.account_id = $1
                       AND l.status = 'active'
-                      AND l.lesson_date >= NOW()
-                      AND l.lesson_date < NOW() + INTERVAL '7 days'
+                      AND l.lesson_date >= $2
+                      AND l.lesson_date < $3
                 ) AS lessons_next_7_days,
                 (
                     SELECT COUNT(*)::int
@@ -1452,7 +2165,7 @@ class DatabaseBusinessMixin:
                           WHERE l.account_id = $1
                             AND (l.student_user_id = u.id OR (l.student_user_id IS NULL AND l.student_id = u.telegram_id))
                             AND l.status = 'active'
-                            AND l.lesson_date >= NOW()
+                            AND l.lesson_date >= $2
                       )
                 ) AS students_without_upcoming_lessons,
                 (
@@ -1460,14 +2173,14 @@ class DatabaseBusinessMixin:
                     FROM payments p
                     WHERE p.account_id = $1
                       AND p.status = 'confirmed'
-                      AND p.created_at >= NOW() - INTERVAL '30 days'
+                      AND p.created_at >= $4
                 ) AS revenue_last_30_days,
                 (
                     SELECT COUNT(*)::int
                     FROM payments p
                     WHERE p.account_id = $1
                       AND p.status = 'confirmed'
-                      AND p.created_at >= NOW() - INTERVAL '30 days'
+                      AND p.created_at >= $4
                 ) AS payments_last_30_days,
                 (
                     SELECT COUNT(*)::int
@@ -1484,6 +2197,9 @@ class DatabaseBusinessMixin:
                       AND csl.is_active = true
                 ) AS calendar_alias_rules
             """,
-            self.require_account_id(),
+            account_id,
+            current_local,
+            next_week,
+            last_30_days,
             fetchrow=True,
         )

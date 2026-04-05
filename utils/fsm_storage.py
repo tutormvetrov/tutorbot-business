@@ -8,6 +8,15 @@ from typing import Any
 from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import BaseStorage, StorageKey
 
+from utils import runtime_store
+
+
+def storage_key_to_string(key: StorageKey) -> str:
+    thread_id = key.thread_id if key.thread_id is not None else "-"
+    business_id = key.business_connection_id or "-"
+    destiny = key.destiny or "default"
+    return f"{key.bot_id}:{key.chat_id}:{key.user_id}:{thread_id}:{business_id}:{destiny}"
+
 
 class JsonFileStorage(BaseStorage):
     def __init__(self, path: str | Path):
@@ -15,10 +24,7 @@ class JsonFileStorage(BaseStorage):
         self._lock = asyncio.Lock()
 
     def _storage_key(self, key: StorageKey) -> str:
-        thread_id = key.thread_id if key.thread_id is not None else "-"
-        business_id = key.business_connection_id or "-"
-        destiny = key.destiny or "default"
-        return f"{key.bot_id}:{key.chat_id}:{key.user_id}:{thread_id}:{business_id}:{destiny}"
+        return storage_key_to_string(key)
 
     def _load_unlocked(self) -> dict[str, dict[str, Any]]:
         if not self.path.exists():
@@ -86,6 +92,53 @@ class JsonFileStorage(BaseStorage):
                 payload[storage_key] = record
             self._save_unlocked(payload)
             return dict(current)
+
+    async def close(self) -> None:
+        return None
+
+
+class PostgresStorage(BaseStorage):
+    def _storage_key(self, key: StorageKey) -> str:
+        return storage_key_to_string(key)
+
+    async def _load_record(self, key: StorageKey) -> dict[str, Any]:
+        return await runtime_store.load_fsm_record(self._storage_key(key))
+
+    async def set_state(self, key: StorageKey, state: str | State | None = None) -> None:
+        state_value = state.state if isinstance(state, State) else state
+        record = await self._load_record(key)
+        await runtime_store.upsert_fsm_record(
+            self._storage_key(key),
+            state_value,
+            dict(record.get("data") or {}),
+        )
+
+    async def get_state(self, key: StorageKey) -> str | None:
+        record = await self._load_record(key)
+        return record.get("state")
+
+    async def set_data(self, key: StorageKey, data: dict[str, Any]) -> None:
+        record = await self._load_record(key)
+        await runtime_store.upsert_fsm_record(
+            self._storage_key(key),
+            record.get("state"),
+            dict(data or {}),
+        )
+
+    async def get_data(self, key: StorageKey) -> dict[str, Any]:
+        record = await self._load_record(key)
+        return dict(record.get("data") or {})
+
+    async def update_data(self, key: StorageKey, data: dict[str, Any]) -> dict[str, Any]:
+        record = await self._load_record(key)
+        current = dict(record.get("data") or {})
+        current.update(data or {})
+        await runtime_store.upsert_fsm_record(
+            self._storage_key(key),
+            record.get("state"),
+            current,
+        )
+        return dict(current)
 
     async def close(self) -> None:
         return None

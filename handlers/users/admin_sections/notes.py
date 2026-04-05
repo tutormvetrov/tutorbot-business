@@ -21,7 +21,12 @@ CLAUDE_DOC_FILE = PROJECT_ROOT / "CLAUDE.md"
 AGENT_CONTEXT_FILE = PROJECT_ROOT / "AGENT_CONTEXT.md"
 DEBUG_CONTEXT_LOG_FILE = PROJECT_ROOT / "data" / "debug_context.jsonl"
 DEBUG_MEDIA_DIR = PROJECT_ROOT / "data" / "debug_media"
-SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К сервису", "admin:cat:service")
+admin_notes_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+    [types.InlineKeyboardButton(text="➕ Новая заметка", callback_data="admin:notes:add")],
+    [types.InlineKeyboardButton(text="🧹 Очистить ленту", callback_data="admin:notes:clear")],
+    [types.InlineKeyboardButton(text="◀️ К системе", callback_data="admin:cat:system")],
+])
+SYSTEM_BACK_KEYBOARD = make_back_button_keyboard("◀️ К системе", "admin:cat:system")
 
 
 def _is_admin(user_id: int) -> bool:
@@ -296,7 +301,7 @@ async def admin_notes_text_entered(message: types.Message, state: FSMContext):
     detail = f"\n\n{html.quote(summary)}" if summary else ""
     await message.answer(
         f"{saved_title}{detail}",
-        reply_markup=SERVICE_BACK_KEYBOARD,
+        reply_markup=SYSTEM_BACK_KEYBOARD,
     )
 
 
@@ -309,7 +314,7 @@ async def admin_notes_clear(callback_query: types.CallbackQuery):
     _append_debug_context_event("notes_cleared", notes_count=0)
     await callback_query.message.edit_text(
         "🗑 <b>Все сообщения очищены.</b>",
-        reply_markup=SERVICE_BACK_KEYBOARD,
+        reply_markup=SYSTEM_BACK_KEYBOARD,
     )
     await callback_query.answer()
 

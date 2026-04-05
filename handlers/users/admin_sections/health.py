@@ -51,7 +51,7 @@ def _format_job_line(label: str, job: dict | None, metric_keys: tuple[str, ...] 
     for key in metric_keys:
         if key in job:
             metric_label = metric_labels.get(key, key)
-            metrics.append(f"{metric_label}={html.quote(str(job[key]))}")
+            metrics.append(f"{metric_label}: {html.quote(str(job[key]))}")
     if metrics:
         fragments.append("· " + ", ".join(metrics))
     return " ".join(fragments)
@@ -67,9 +67,12 @@ def _format_health_text(student_count: int, report: dict, ops_status: dict, runt
     lines = [
         "🏥 <b>Здоровье бота</b>",
         "",
+        "Общее:",
         f"🤖 Статус: <b>{html.quote(str(status))}</b>",
         f"⏱ Scheduler: <b>{html.quote(str(scheduler))}</b>",
         f"👥 Активных учеников: <b>{student_count}</b>",
+        "",
+        "Calendar sync:",
         f"🗓 Последний sync: <b>{html.quote(str(last_sync))}</b>",
         f"📥 Импортировано: <b>{report.get('imported', 0)}</b>",
         f"♻️ Обновлено: <b>{report.get('updated', 0)}</b>",
@@ -87,8 +90,10 @@ def _format_health_text(student_count: int, report: dict, ops_status: dict, runt
         lines.append("")
         lines.append("⚠️ <b>Последние ошибки jobs:</b>")
         for event in errors[-5:]:
+            happened_at = _format_timestamp(event.get("ts"))
             lines.append(
                 f"• {html.quote(event.get('event_type', 'unknown'))} — {html.quote(event.get('status', 'unknown'))}"
+                + (f" ({html.quote(happened_at)})" if happened_at != "—" else "")
             )
     else:
         lines.append("")
@@ -104,13 +109,14 @@ async def admin_health(callback_query: types.CallbackQuery, db: Database):
         return
 
     students = await db.get_all_students()
-    report = load_last_sync_report()
-    ops_status = load_ops_status()
-    runtime_events = load_recent_runtime_events(limit=30)
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
+    report = await load_last_sync_report(account_id)
+    ops_status = await load_ops_status()
+    runtime_events = await load_recent_runtime_events(limit=30)
 
     text = _format_health_text(len(students), report, ops_status, runtime_events)
     await callback_query.message.edit_text(
         text,
-        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
+        reply_markup=make_back_button_keyboard("◀️ К системе", "admin:cat:system"),
     )
     await callback_query.answer()

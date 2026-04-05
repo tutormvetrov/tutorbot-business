@@ -1,7 +1,6 @@
 from aiogram import html, types
 
-from data.config import load_teacher_info
-from utils.brand import choose_tone_variant
+from utils.brand import DEFAULT_BRAND_TONE, choose_tone_variant
 from utils.speech import choose_form
 from utils.workspace import has_workspace_admin_access
 
@@ -12,6 +11,20 @@ def is_admin(user_id: int) -> bool:
 
 def q(value) -> str:
     return html.quote(str(value)) if value is not None else "—"
+
+
+def _account_support_keyboard():
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="👥 Команда", callback_data="admin:team"),
+            types.InlineKeyboardButton(text="🔗 Инвайты", callback_data="admin:invites"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🧾 Тариф", callback_data="admin:billing"),
+            types.InlineKeyboardButton(text="🏢 Аккаунт", callback_data="workspace:selector"),
+        ],
+        [types.InlineKeyboardButton(text="◀️ К аккаунту", callback_data="admin:cat:account")],
+    ])
 
 
 def message_to_html(message: types.Message) -> str:
@@ -72,24 +85,32 @@ def extract_broadcast_payload(message: types.Message) -> dict | None:
 
 
 def get_level_test_url(info: dict | None = None) -> str:
-    info = info or load_teacher_info()
+    info = info or {}
     contacts = info.get("contacts", {})
     return contacts.get("level_test_url", "") or info.get("level_test_url", "")
 
 
-def build_level_test_broadcast_text(speech_style: str | None = None) -> str:
-    url = get_level_test_url()
+def build_level_test_broadcast_text(
+    speech_style: str | None = None,
+    *,
+    info: dict | None = None,
+    tone: str | None = None,
+) -> str:
+    tone = tone or DEFAULT_BRAND_TONE
+    url = get_level_test_url(info)
     intro = choose_tone_variant(
         "Я подготовил короткий тест, который поможет точнее определить",
         "Я подготовил короткий тест, который поможет точнее определить",
         "Я подготовил короткий тест, который поможет точнее определить",
         "Я подготовил небольшой тест, который поможет точнее определить",
+        tone=tone,
     )
     second_line = choose_tone_variant(
         "Так будет проще подобрать подходящую программу занятий и темп.",
         "Так будет проще подобрать подходящую программу занятий и темп.",
         "Так будет проще подобрать подходящую программу занятий и темп.",
         "Так будет легче подобрать подходящий формат занятий и темп.",
+        tone=tone,
     )
     if url:
         safe_url = html.quote(url)
@@ -192,19 +213,18 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         invites = await db.get_active_account_invites()
         await target.edit_text(
             build_invites_text(dict(account or {}), [dict(item) for item in invites]),
-            reply_markup=make_invites_keyboard(invites),
+            reply_markup=make_invites_keyboard(invites, back_callback="admin:cat:account"),
         )
         return True
 
     if view == "admin:support":
-        from keyboards.inline import support_keyboard
         from utils.product_ui import build_support_text
 
         support_snapshot = await db.get_support_snapshot()
         product = support_snapshot["billing"]["product"]
         await target.edit_text(
             build_support_text(support_snapshot, product),
-            reply_markup=support_keyboard,
+            reply_markup=_account_support_keyboard(),
         )
         return True
 
@@ -216,7 +236,7 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         team_members = await db.get_account_team_members()
         await target.edit_text(
             build_team_text(dict(account or {}), [dict(item) for item in team_members]),
-            reply_markup=make_team_keyboard(back_callback="admin:cat:service"),
+            reply_markup=make_team_keyboard(back_callback="admin:cat:account"),
         )
         return True
 

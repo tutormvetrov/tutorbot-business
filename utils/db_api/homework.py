@@ -70,8 +70,9 @@ class DatabaseHomeworkMixin:
             hw_id, student_id, account_id, student_user_id, execute=True,
         )
 
-    async def get_homework_due_tomorrow(self):
+    async def get_homework_due_tomorrow(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
         return await self.execute(
             """
             SELECT h.*, u.telegram_id, u.full_name, COALESCE(u.speech_style, 'formal') AS speech_style
@@ -81,10 +82,11 @@ class DatabaseHomeworkMixin:
             WHERE h.status = 'active'
               AND h.account_id = $1
               AND h.reminder_sent = false
-              AND h.deadline >= NOW() + INTERVAL '20 hours'
-              AND h.deadline <= NOW() + INTERVAL '28 hours'
+              AND h.deadline >= $2 + INTERVAL '20 hours'
+              AND h.deadline <= $2 + INTERVAL '28 hours'
             """,
             account_id,
+            current_local,
             fetch=True,
         )
 

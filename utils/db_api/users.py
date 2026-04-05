@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from data.config import normalize_person_name
 from utils.text_utils import extract_student_name
 
@@ -438,9 +440,18 @@ class DatabaseUserMixin:
                     user_row_id,
                 )
                 await conn.execute(
-                    "DELETE FROM group_members WHERE student_id = $1 OR student_user_id = $2",
+                    """
+                    DELETE FROM group_members
+                    WHERE group_id IN (
+                        SELECT id
+                        FROM groups
+                        WHERE account_id = $3
+                    )
+                      AND (student_id = $1 OR student_user_id = $2)
+                    """,
                     telegram_id,
                     user_row_id,
+                    account_id,
                 )
                 await conn.execute(
                     """
@@ -457,8 +468,10 @@ class DatabaseUserMixin:
                     account_id,
                 )
 
-    async def get_students_for_review(self):
+    async def get_students_for_review(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
+        threshold = current_local - timedelta(days=21)
         return await self.execute(
             """
             SELECT
@@ -477,9 +490,10 @@ class DatabaseUserMixin:
               AND u.review_sent = false
               AND l.lesson_date IS NOT NULL
             GROUP BY u.telegram_id, u.full_name, COALESCE(u.speech_style, 'formal')
-            HAVING MIN(l.lesson_date) <= NOW() - INTERVAL '21 days'
+            HAVING MIN(l.lesson_date) <= $2
             """,
             account_id,
+            threshold,
             fetch=True,
         )
 
@@ -527,8 +541,10 @@ class DatabaseUserMixin:
             execute=True,
         )
 
-    async def get_admin_dashboard_snapshot(self):
+    async def get_admin_dashboard_snapshot(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
+        current_date = current_local.date()
         return await self.execute(
             """
             SELECT
@@ -549,7 +565,7 @@ class DatabaseUserMixin:
                     WHERE l.status = 'active'
                       AND l.account_id = $1
                       AND l.lesson_date IS NOT NULL
-                      AND l.lesson_date::date = CURRENT_DATE
+                      AND l.lesson_date::date = $2
                       AND u.is_active = true
                       AND COALESCE(u.is_internal_account, false) = false
                 ) AS lessons_today,
@@ -606,11 +622,13 @@ class DatabaseUserMixin:
                             AND l.account_id = $1
                             AND l.status = 'active'
                             AND l.lesson_date IS NOT NULL
-                            AND l.lesson_date >= NOW()
+                            AND l.lesson_date >= $3
                       )
                 ) AS students_without_upcoming_lessons
             """,
             account_id,
+            current_date,
+            current_local,
             fetchrow=True,
         )
 

@@ -8,10 +8,10 @@ from aiogram import html
 
 from data.config import get_product_name
 from utils.brand import (
+    DEFAULT_BRAND_TONE,
     brand_tone_description,
     brand_tone_label,
     choose_tone_variant,
-    get_brand_tone,
 )
 from utils.speech import speech_style_label
 from utils.workspace import workspace_role_label
@@ -23,7 +23,7 @@ DEACTIVATED_ACCOUNT_TEXT = "⛔️ Ваш аккаунт деактивиров�
 
 ADMIN_HOME_TEXT = (
     "🛠 <b>Панель администратора</b>\n\n"
-    "Сверху — живая сводка по боту. Ниже — четыре рабочих раздела."
+    "Сверху — живая сводка по боту. Ниже — рабочие разделы по задачам."
 )
 ADMIN_STUDENTS_CATEGORY_TEXT = (
     "👥 <b>Ученики</b>\n\n"
@@ -38,9 +38,17 @@ ADMIN_COMMUNICATION_CATEGORY_TEXT = (
     "📢 <b>Коммуникации</b>\n\n"
     "Рассылки, ответы ученикам и служебные сообщения."
 )
+ADMIN_ACCOUNT_CATEGORY_TEXT = (
+    "🏢 <b>Аккаунт и рост</b>\n\n"
+    "Быстрый запуск, тариф, команда, аналитика и всё, что помогает держать аккаунт в рабочем состоянии."
+)
 ADMIN_SERVICE_CATEGORY_TEXT = (
     "⚙️ <b>Сервис</b>\n\n"
-    "Calendar, диагностика, billing, инвайты, support и рабочие заметки."
+    "Раздел стал короче: отсюда можно перейти к настройке аккаунта или к системным инструментам."
+)
+ADMIN_SYSTEM_CATEGORY_TEXT = (
+    "🖥 <b>Система и диагностика</b>\n\n"
+    "Интеграции, Calendar, здоровье бота, заметки и служебная диагностика."
 )
 ADMIN_SYNC_IN_PROGRESS_TEXT = "🔄 Синхронизирую Google Calendar..."
 ADMIN_SYNC_ERROR_HINT = (
@@ -48,9 +56,15 @@ ADMIN_SYNC_ERROR_HINT = (
     "и корректность <b>GOOGLE_CALENDAR_ID</b>."
 )
 
-ADMIN_NO_REGISTERED_STUDENTS_TEXT = "⚠️ Нет зарегистрированных учеников."
+ADMIN_NO_REGISTERED_STUDENTS_TEXT = (
+    "⚠️ <b>Пока нет учеников</b>\n\n"
+    "Сначала добавьте первого ученика, а затем вернитесь к занятиям."
+)
 ADMIN_NO_ACTIVE_STUDENTS_TEXT = "👥 Нет активных учеников."
-ADMIN_STUDENTS_EMPTY_TEXT = "👥 <b>Список учеников</b>\n\nПока здесь пусто. Как только появятся ученики, список заполнится автоматически."
+ADMIN_STUDENTS_EMPTY_TEXT = (
+    "👥 <b>Список учеников</b>\n\n"
+    "Пока здесь пусто. Добавьте первого ученика из панели или попросите его сначала открыть бота через <code>/start</code>."
+)
 ADMIN_LESSON_FORMATS_EMPTY_TEXT = "🏫 <b>Формат занятий</b>\n\nСейчас нет активных учеников, для которых можно переключить формат."
 ADMIN_SPEECH_STYLES_EMPTY_TEXT = "🗣 <b>Обращение с учениками</b>\n\nСейчас нет активных учеников, для которых можно переключить обращение."
 ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT = (
@@ -58,7 +72,10 @@ ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT = (
     "Сейчас нет активных учеников, которым можно отправить сообщение."
 )
 
-ADMIN_ADD_LESSON_START_TEXT = "➕ <b>Добавить занятие</b>\n\nВыберите ученика, для которого хотите поставить урок."
+ADMIN_ADD_LESSON_START_TEXT = (
+    "➕ <b>Добавить занятие</b>\n\n"
+    "Выберите ученика, для которого хотите поставить первое или следующее занятие."
+)
 ADMIN_ADD_LESSON_PROMPT_TEXT = (
     "📅 Введите дату и время занятия в формате:\n"
     "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
@@ -205,8 +222,8 @@ def build_schedule_text(lessons: list) -> str:
     if not lessons:
         return (
             "📅 <b>Расписание</b>\n\n"
-            "Ближайших занятий пока нет.\n\n"
-            "Как только преподаватель добавит урок, он появится здесь."
+            "Расписание пока пустое.\n\n"
+            "Как только преподаватель поставит первое занятие, оно сразу появится здесь."
         )
 
     next_lesson = None
@@ -265,10 +282,33 @@ def build_profile_text(
             for child in children:
                 lines.append(f"• {html.quote(child)}")
         else:
-            lines.append("• Пока нет привязанных учеников.")
+            lines.append("• Пока ни один ученик не привязан. Если связь уже должна быть, напишите преподавателю.")
 
     lines.append("")
     lines.append("Если что-то нужно поменять или уточнить, нужное действие уже есть в кнопках ниже.")
+    return "\n".join(lines)
+
+
+def build_parent_children_text(children: list[str] | None) -> str:
+    lines = [
+        "👨‍👩‍👧 <b>Дети в аккаунте</b>",
+        "",
+    ]
+    if not children:
+        lines.extend([
+            "Пока ни один ученик не привязан.",
+            "Если связь уже должна быть, напишите преподавателю через контакты.",
+        ])
+        return "\n".join(lines)
+
+    lines.append(f"Сейчас привязано детей: <b>{len(children)}</b>")
+    lines.append("")
+    for child in children:
+        lines.append(f"• {html.quote(child)}")
+    lines.extend([
+        "",
+        "Еженедельная сводка по занятиям приходит автоматически. Если список нужно обновить, свяжитесь с преподавателем.",
+    ])
     return "\n".join(lines)
 
 
@@ -282,35 +322,38 @@ def build_payment_text(balance: int, payments: list) -> str:
     if not payments:
         lines.extend([
             "",
-            "Оплат в истории пока нет.",
-            "Когда преподаватель внесёт оплату, она появится здесь.",
+            "Пока ни одной оплаты не внесено.",
+            "После первой оплаты здесь появится история и остаток уроков по каждой записи.",
         ])
         return "\n".join(lines)
 
     lines.extend([
         "",
-        "Ниже — последние оплаты и текущий остаток по каждой из них.",
-        "",
-        "💳 <b>История оплат</b>",
+        "Последние оплаты:",
     ])
     for index, payment in enumerate(payments, 1):
         date_str = format_date(payment.get("payment_date"))
-        lines.extend([
-            "",
-            f"{index}. <b>{int(payment['amount'])} ₽</b> · {payment['lessons_count']} ур.",
-            f"   📅 {date_str}",
-            f"   🎓 Остаток по этой оплате: {lesson_balance_label(payment.get('lessons_remaining'))}",
-        ])
+        lines.append(
+            f"• {index}. <b>{int(payment['amount'])} ₽</b> · {payment['lessons_count']} ур. · "
+            f"{lesson_balance_label(payment.get('lessons_remaining'))} · {date_str}"
+        )
     return "\n".join(lines)
 
 
-def build_contacts_text(info: dict, show_address: bool = False) -> str:
+def build_contacts_text(
+    info: dict,
+    show_address: bool = False,
+    *,
+    tone: str | None = None,
+    intro_text: str | None = None,
+) -> str:
     contacts = info.get("contacts", {})
-    tone = get_brand_tone()
+    tone = tone or DEFAULT_BRAND_TONE
     lines = [
         "📞 <b>Контакты преподавателя</b>",
         "",
-        choose_tone_variant(
+        intro_text
+        or choose_tone_variant(
             "Здесь собраны основные способы связи и подключения к занятию.",
             "Здесь собраны быстрые способы связи и подключения к занятию.",
             "Здесь собраны быстрые способы связи и подключения к занятию.",
@@ -355,9 +398,14 @@ def build_contacts_text(info: dict, show_address: bool = False) -> str:
     return "\n".join(lines)
 
 
-def build_help_text() -> str:
-    tone = get_brand_tone()
-    product_name = get_product_name()
+def build_help_text(
+    *,
+    tone: str | None = None,
+    product_name: str | None = None,
+    intro_text: str | None = None,
+) -> str:
+    tone = tone or DEFAULT_BRAND_TONE
+    product_name = product_name or get_product_name()
     site_line = choose_tone_variant(
         "↗️ <b>Сайт и материалы</b> — тест уровня и основные материалы преподавателя",
         "↗️ <b>Сайт и материалы</b> — тест уровня, информация о занятиях и полезные материалы",
@@ -365,22 +413,23 @@ def build_help_text() -> str:
         "↗️ <b>Сайт и материалы</b> — тест уровня и материалы по занятиям",
         tone=tone,
     )
+    intro_block = f"{html.quote(intro_text)}\n\n" if intro_text else ""
     return (
         f"🤖 <b>Справка по {html.quote(product_name)}</b>\n\n"
-        "<b>Команды:</b>\n"
+        f"{intro_block}"
+        "<b>Команды</b>\n"
         "/start — начать работу / войти\n"
         "/menu — главное меню\n"
         "/profile — мой профиль\n"
         "/help — эта справка\n\n"
-        "<b>Что есть в боте:</b>\n"
-        "📅 <b>Расписание</b> — ближайшие занятия\n"
-        "📚 <b>Домашние задания</b> — активные и выполненные задания\n"
-        "❄️ <b>Заморозка</b> — заявка на паузу в занятиях\n"
-        "💰 <b>Оплата</b> — баланс уроков и история оплат\n"
-        "👤 <b>Профиль</b> — данные, напоминания и тест уровня\n"
-        "📞 <b>Контакты</b> — связь, онлайн-занятия и очный адрес\n"
-        "💳 <b>Реквизиты</b> — стоимость и способы оплаты\n"
-        "💼 <b>Продукт</b> — тарифы, подписка, trial и upgrade-путь\n"
+        "<b>Основные разделы</b>\n"
+        "📅 Расписание\n"
+        "📚 Домашние задания\n"
+        "💰 Оплата\n"
+        "👤 Профиль и уведомления\n"
+        "📞 Контакты и ссылки\n"
+        "💳 Реквизиты\n"
+        "💼 Продукт и тариф\n"
         f"{site_line}"
     )
 
@@ -396,8 +445,8 @@ def build_brand_tone_text(current_tone: str | None) -> str:
     )
 
 
-def build_parent_weekly_digest_text(parent_name: str, items: list[dict]) -> str:
-    tone = get_brand_tone()
+def build_parent_weekly_digest_text(parent_name: str, items: list[dict], *, tone: str | None = None) -> str:
+    tone = tone or DEFAULT_BRAND_TONE
     intro = choose_tone_variant(
         "Короткая сводка по занятиям за неделю:",
         "Короткая сводка по занятиям за неделю:",
@@ -421,16 +470,16 @@ def build_parent_weekly_digest_text(parent_name: str, items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_requisites_text(req: dict) -> str:
+def build_requisites_text(req: dict, *, footer_text: str | None = None) -> str:
     lines = [
         "💳 <b>Реквизиты и стоимость</b>",
         "",
     ]
-    if req.get("rate"):
-        lines.extend([
-            "📌 <b>Стоимость занятия</b>",
-            html.quote(req["rate"]),
-        ])
+    rates = req.get("rates") or ([req["rate"]] if req.get("rate") else [])
+    if rates:
+        lines.append("📌 <b>Стоимость занятия</b>")
+        for item in rates:
+            lines.append(html.quote(item))
     if req.get("card"):
         lines.extend([
             "",
@@ -452,7 +501,7 @@ def build_requisites_text(req: dict) -> str:
         ])
     lines.extend([
         "",
-        "Если уже отправили оплату, можно сразу нажать кнопку <b>«Сообщить об оплате»</b> ниже в разделе оплаты.",
+        footer_text or "Если уже отправили оплату, можно сразу нажать кнопку <b>«Сообщить об оплате»</b> ниже в разделе оплаты.",
     ])
     return "\n".join(lines)
 
@@ -499,11 +548,7 @@ def build_homework_list_text(items: list, status: str, today: date | None = None
     if status == "done":
         lines = [f"✅ <b>Выполненные задания</b> ({len(items)})"]
         for index, hw in enumerate(items, 1):
-            lines.extend([
-                "",
-                f"✅ <b>{index}. {hw['title']}</b>",
-                f"📅 Дедлайн: {format_date(hw.get('deadline'))}",
-            ])
+            lines.extend(["", f"✅ <b>{index}. {hw['title']}</b> · {format_date(hw.get('deadline'))}"])
             if hw.get("description"):
                 lines.append(f"📄 {hw['description']}")
         return "\n".join(lines)
@@ -517,11 +562,7 @@ def build_homework_list_text(items: list, status: str, today: date | None = None
     for group_title, group_items in groups:
         lines.extend(["", group_title])
         for hw in group_items:
-            lines.extend([
-                "",
-                f"📝 <b>{counter}. {hw['title']}</b>",
-                f"📅 Дедлайн: {format_date(hw.get('deadline'))}",
-            ])
+            lines.extend(["", f"📝 <b>{counter}. {hw['title']}</b> · {format_date(hw.get('deadline'))}"])
             if hw.get("description"):
                 lines.append(f"📄 {hw['description']}")
             counter += 1
@@ -532,7 +573,7 @@ def build_homework_empty_text(status: str) -> str:
     if status == "done":
         return (
             "✅ <b>Выполненные задания</b>\n\n"
-            "Пока здесь пусто. Когда вы отметите задание как выполненное, оно появится в этом разделе."
+            "Пока здесь ничего нет. Как только вы отметите задание как выполненное, оно появится в этом разделе."
         )
     return (
         "📚 <b>Активные задания</b>\n\n"
@@ -553,13 +594,13 @@ def build_action_result_text(title: str, body: str, next_step: str = "", icon: s
     return "\n".join(lines)
 
 
-def build_reply_sent_text() -> str:
+def build_reply_sent_text(*, tone: str | None = None) -> str:
     follow_up = choose_tone_variant(
         "Преподаватель получит его в ближайшее время.",
         "Преподаватель получит его в ближайшее время.",
         "Преподаватель получит его в ближайшее время.",
         "Преподаватель увидит его в ближайшее время.",
-        tone=get_brand_tone(),
+        tone=tone or DEFAULT_BRAND_TONE,
     )
     return (
         "✅ <b>Сообщение отправлено</b>\n\n"
@@ -593,7 +634,12 @@ def build_freeze_confirm_text(reason_label: str, active_count: int) -> str:
     )
 
 
-def build_freeze_success_text(reason_label: str | None = None, affected_count: int | None = None) -> str:
+def build_freeze_success_text(
+    reason_label: str | None = None,
+    affected_count: int | None = None,
+    *,
+    tone: str | None = None,
+) -> str:
     details = []
     if reason_label:
         details.append(f"Причина: <b>{html.quote(reason_label)}</b>")
@@ -603,7 +649,7 @@ def build_freeze_success_text(reason_label: str | None = None, affected_count: i
     return (
         "✅ <b>Заявка на заморозку отправлена</b>\n"
         f"{details_block}\n"
-        f"{choose_tone_variant('Преподаватель ответит позже.', 'Преподаватель увидит её и ответит вам, как только сможет.', 'Преподаватель увидит её и ответит вам, как только сможет.', 'Преподаватель увидит заявку и вернётся с ответом, как только сможет.', tone=get_brand_tone())}\n"
+        f"{choose_tone_variant('Преподаватель ответит позже.', 'Преподаватель увидит её и ответит вам, как только сможет.', 'Преподаватель увидит её и ответит вам, как только сможет.', 'Преподаватель увидит заявку и вернётся с ответом, как только сможет.', tone=tone or DEFAULT_BRAND_TONE)}\n"
         "Пока ничего дополнительно делать не нужно."
     )
 
@@ -672,7 +718,7 @@ def build_self_delete_success_text(role: str | None) -> str:
     )
 
 
-def build_level_test_text(action: str, has_url: bool) -> str:
+def build_level_test_text(action: str, has_url: bool, *, tone: str | None = None) -> str:
     if action == "now" and has_url:
         return (
             "🧪 <b>Тест уровня</b>\n\n"
@@ -681,7 +727,7 @@ def build_level_test_text(action: str, has_url: bool) -> str:
                 "Кнопка ниже сразу откроет тест, чтобы можно было пройти его в удобный момент.",
                 "Отлично. Кнопка ниже сразу откроет тест, чтобы можно было пройти его в удобный момент.",
                 "Кнопка ниже сразу откроет тест в удобный для вас момент.",
-                tone=get_brand_tone(),
+                tone=tone or DEFAULT_BRAND_TONE,
             )
         )
     if action == "now":
@@ -799,17 +845,19 @@ def build_admin_dashboard_text(snapshot: dict, ops_status: dict, last_sync_label
     lines = [
         "🛠 <b>Панель администратора</b>",
         "",
-        "Сводка на сейчас:",
+        "Короткая сводка на сейчас:",
         f"👥 Активных учеников: <b>{snapshot.get('active_students', 0)}</b>",
         f"📅 Уроков сегодня: <b>{snapshot.get('lessons_today', 0)}</b>",
-        f"💰 Без уроков на балансе: <b>{snapshot.get('unpaid_students', 0)}</b>",
-        f"🕳 Без ближайших уроков: <b>{snapshot.get('students_without_upcoming_lessons', 0)}</b>",
-        f"❄️ Заявок на заморозку: <b>{snapshot.get('pending_freezes', 0)}</b>",
+        f"💰 Нулевой баланс: <b>{snapshot.get('unpaid_students', 0)}</b>",
+        f"📭 Без ближайших уроков: <b>{snapshot.get('students_without_upcoming_lessons', 0)}</b>",
+        f"❄️ Заморозки на рассмотрении: <b>{snapshot.get('pending_freezes', 0)}</b>",
         f"📚 Активных ДЗ: <b>{snapshot.get('active_homework', 0)}</b>",
+        "",
+        "Система:",
         f"⏱ Scheduler: <b>{scheduler}</b>",
         f"🗓 Последний sync: <b>{html.quote(last_sync_label)}</b>",
         "",
-        "Выберите раздел ниже.",
+        "Ниже выберите рабочую зону: ученики, учебный процесс, коммуникации, аккаунт или система.",
     ]
     return "\n".join(lines)
 
@@ -832,15 +880,15 @@ def build_admin_students_page_text(students: list, page: int, page_size: int) ->
         freshness = student_freshness_badge(student.get("first_lesson_date"))
         lines.extend([
             "",
-            f"<b>{index}. {html.quote(student['full_name'])}</b>",
-            f"{lesson_format_icon(student.get('lesson_format'))} {lesson_format_label(student.get('lesson_format'))} · {html.quote(student.get('language') or '—')} {html.quote(student.get('level') or '—')} · {freshness}",
-            f"🗣 Обращение: <b>{speech_style_label(student.get('speech_style'))}</b>",
-            f"🎓 Баланс: <b>{lesson_balance_label(student.get('lesson_balance'))}</b> · 📅 {lesson_label}",
+            f"{index}. <b>{html.quote(student['full_name'])}</b>",
+            f"{lesson_format_icon(student.get('lesson_format'))} {lesson_format_label(student.get('lesson_format'))} · "
+            f"{html.quote(student.get('language') or '—')} {html.quote(student.get('level') or '—')} · "
+            f"{lesson_balance_label(student.get('lesson_balance'))} · {lesson_label} · {freshness}",
         ])
 
     lines.extend([
         "",
-        "Откройте карточку ученика кнопкой ниже — там будут быстрые действия без лишних переходов.",
+        "Откройте карточку ниже, чтобы перейти к действиям и настройкам.",
     ])
     return "\n".join(lines)
 
@@ -860,6 +908,8 @@ def build_admin_student_card_text(student, balance: int, next_lesson: datetime |
         f"📅 Ближайший урок: <b>{html.quote(format_datetime(next_lesson) if next_lesson else 'не назначен')}</b>",
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
+        "",
+        "Ниже отдельно вынесены действия и настройки, чтобы карточка оставалась читаемой.",
     ])
 
 

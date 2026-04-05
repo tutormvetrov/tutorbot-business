@@ -10,11 +10,17 @@ if str(ROOT) not in sys.path:
 
 from keyboards.inline import (
     admin_education_keyboard,
+    admin_account_keyboard,
     admin_keyboard,
     admin_service_keyboard,
+    admin_system_keyboard,
     admin_students_keyboard,
     make_brand_tone_keyboard,
+    make_admin_student_card_actions_keyboard,
+    make_admin_student_card_card_keyboard,
+    make_admin_student_card_danger_keyboard,
     make_admin_speech_styles_keyboard,
+    make_admin_student_card_settings_keyboard,
     make_admin_student_card_keyboard,
     make_contacts_keyboard,
     make_lesson_delete_confirm_keyboard,
@@ -75,6 +81,22 @@ class KeyboardHelpersTest(unittest.TestCase):
         self.assertIn("admin:write_to_student:555:2", callbacks)
         self.assertIn("admin:student_speech_style:555:2:informal", callbacks)
 
+    def test_admin_student_card_keyboard_is_split_into_logical_sections(self):
+        card_texts = [button.text for row in make_admin_student_card_card_keyboard(555, 2).inline_keyboard for button in row]
+        actions_texts = [button.text for row in make_admin_student_card_actions_keyboard(555, 2).inline_keyboard for button in row]
+        settings_texts = [button.text for row in make_admin_student_card_settings_keyboard(555, 2, "offline", "formal").inline_keyboard for button in row]
+        danger_texts = [button.text for row in make_admin_student_card_danger_keyboard(555, 2).inline_keyboard for button in row]
+
+        self.assertIn("✉️ Написать", card_texts)
+        self.assertIn("💰 Оплаты", card_texts)
+        self.assertIn("➕ Урок", actions_texts)
+        self.assertIn("💳 Добавить оплату", actions_texts)
+        self.assertIn("📚 Задать ДЗ", actions_texts)
+        self.assertTrue(any("Переключить на онлайн" in text for text in settings_texts))
+        self.assertTrue(any("Обращение: на Вы" in text for text in settings_texts))
+        self.assertIn("🗑 Деактивировать", danger_texts)
+        self.assertIn("💀 Удалить навсегда", danger_texts)
+
     def test_lesson_delete_keyboard_offers_calendar_option_when_linked(self):
         kb = make_lesson_delete_confirm_keyboard(42, can_delete_from_calendar=True)
         texts = [button.text for row in kb.inline_keyboard for button in row]
@@ -94,7 +116,8 @@ class KeyboardHelpersTest(unittest.TestCase):
                 "👥 Ученики",
                 "📚 Учебный процесс",
                 "📢 Коммуникации",
-                "⚙️ Сервис",
+                "🏢 Аккаунт",
+                "🛠 Система",
                 "◀️ Главное меню",
             ],
         )
@@ -103,6 +126,8 @@ class KeyboardHelpersTest(unittest.TestCase):
         student_texts = [button.text for row in admin_students_keyboard.inline_keyboard for button in row]
         education_texts = [button.text for row in admin_education_keyboard.inline_keyboard for button in row]
         service_texts = [button.text for row in admin_service_keyboard.inline_keyboard for button in row]
+        account_texts = [button.text for row in admin_account_keyboard.inline_keyboard for button in row]
+        system_texts = [button.text for row in admin_system_keyboard.inline_keyboard for button in row]
 
         self.assertIn("📋 Список учеников", student_texts)
         self.assertIn("👤 Добавить ученика", student_texts)
@@ -113,7 +138,11 @@ class KeyboardHelpersTest(unittest.TestCase):
         self.assertIn("🗑 Удалить занятие", education_texts)
         self.assertIn("📚 Задать ДЗ", education_texts)
         self.assertIn("📋 Активные ДЗ", education_texts)
-        self.assertIn("🎨 Тональность бренда", service_texts)
+        self.assertIn("🎨 Оформление и экраны", service_texts)
+        self.assertIn("📈 Аналитика", account_texts)
+        self.assertIn("🧾 Тариф", account_texts)
+        self.assertIn("🚦 Быстрый запуск", system_texts)
+        self.assertIn("🏥 Здоровье бота", system_texts)
 
     def test_admin_speech_styles_keyboard_shows_toggle_targets(self):
         kb = make_admin_speech_styles_keyboard(

@@ -2,8 +2,9 @@ from typing import Optional
 
 
 class DatabaseLessonMixin:
-    async def get_lessons_for_reminder(self):
+    async def get_lessons_for_reminder(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
         return await self.execute(
             """
             SELECT
@@ -24,18 +25,19 @@ class DatabaseLessonMixin:
               AND (
                   (
                       COALESCE(u.lesson_format, 'online') != 'offline'
-                      AND l.lesson_date >= NOW() + INTERVAL '5 minutes'
-                      AND l.lesson_date <= NOW() + INTERVAL '15 minutes'
+                      AND l.lesson_date >= $2 + INTERVAL '5 minutes'
+                      AND l.lesson_date <= $2 + INTERVAL '15 minutes'
                   )
                   OR
                   (
                       COALESCE(u.lesson_format, 'online') = 'offline'
-                      AND l.lesson_date >= NOW() + INTERVAL '55 minutes'
-                      AND l.lesson_date <= NOW() + INTERVAL '65 minutes'
+                      AND l.lesson_date >= $2 + INTERVAL '55 minutes'
+                      AND l.lesson_date <= $2 + INTERVAL '65 minutes'
                   )
               )
             """,
             account_id,
+            current_local,
             fetch=True,
         )
 
@@ -48,8 +50,9 @@ class DatabaseLessonMixin:
             execute=True,
         )
 
-    async def get_lessons_missing_homework(self):
+    async def get_lessons_missing_homework(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
         return await self.execute(
             """
             WITH next_lessons AS (
@@ -66,8 +69,8 @@ class DatabaseLessonMixin:
                   AND l.account_id = $1
                   AND l.lesson_date IS NOT NULL
                   AND l.homework_check_reminder_sent = false
-                  AND l.lesson_date > NOW()
-                  AND l.lesson_date <= NOW() + INTERVAL '24 hours'
+                  AND l.lesson_date > $2
+                  AND l.lesson_date <= $2 + INTERVAL '24 hours'
                   AND u.role = 'student'
                   AND u.is_active = true
                   AND COALESCE(u.is_internal_account, false) = false
@@ -117,6 +120,7 @@ class DatabaseLessonMixin:
             ORDER BY n.lesson_date ASC
             """,
             account_id,
+            current_local,
             fetch=True,
         )
 
@@ -259,19 +263,21 @@ class DatabaseLessonMixin:
         )
         return int(result) if result else 0
 
-    async def get_past_unprocessed_lessons(self):
+    async def get_past_unprocessed_lessons(self, reference_now=None):
         account_id = self.require_account_id()
+        current_local = reference_now or await self.get_account_now()
         return await self.execute(
             """
             SELECT l.id, l.student_id
             FROM lessons l
             WHERE l.account_id = $1
-              AND l.status = 'active'
+              AND l.status IN ('active', 'completed')
               AND l.balance_consumed = false
               AND l.lesson_date IS NOT NULL
-              AND l.lesson_date < NOW()
+              AND l.lesson_date < $2
             """,
             account_id,
+            current_local,
             fetch=True,
         )
 
@@ -280,10 +286,30 @@ class DatabaseLessonMixin:
         student_user_id = await self.get_user_row_id(student_id)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                lesson = await conn.fetchrow(
+                    """
+                    SELECT id, status, balance_consumed
+                    FROM lessons
+                    WHERE id = $1
+                      AND account_id = $2
+                    FOR UPDATE
+                    """,
+                    lesson_id,
+                    account_id,
+                )
+                if not lesson:
+                    return {"completed": False, "consumed": False, "reason": "missing"}
+                lesson = dict(lesson)
+                if lesson.get("balance_consumed"):
+                    return {
+                        "completed": lesson.get("status") == "completed",
+                        "consumed": True,
+                        "reason": "already_consumed",
+                    }
                 await conn.execute(
                     """
                     UPDATE lessons
-                    SET status = 'completed', balance_consumed = true
+                    SET status = 'completed'
                     WHERE id = $1
                       AND account_id = $2
                     """,
@@ -309,6 +335,18 @@ class DatabaseLessonMixin:
                         "UPDATE payments SET lessons_remaining = lessons_remaining - 1 WHERE id = $1",
                         payment['id'],
                     )
+                    await conn.execute(
+                        """
+                        UPDATE lessons
+                        SET balance_consumed = true
+                        WHERE id = $1
+                          AND account_id = $2
+                        """,
+                        lesson_id,
+                        account_id,
+                    )
+                    return {"completed": True, "consumed": True, "reason": "payment_applied"}
+                return {"completed": True, "consumed": False, "reason": "awaiting_payment"}
 
     async def delete_lesson(self, lesson_id: int):
         account_id = self.require_account_id()
@@ -352,11 +390,11 @@ class DatabaseLessonMixin:
             fetch=True,
         )
 
-    async def get_google_event_ids_in_window(self, days_ahead: int = 60) -> list:
+    async def get_google_event_ids_in_window(self, days_ahead: int = 60, reference_now=None) -> list:
         from datetime import datetime, timedelta
 
         account_id = self.require_account_id()
-        now = datetime.now()
+        now = reference_now or await self.get_account_now()
         end = now + timedelta(days=days_ahead)
         rows = await self.execute(
             """

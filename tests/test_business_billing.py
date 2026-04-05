@@ -20,11 +20,15 @@ from utils.product_ui import (
     build_domain_user_refs_text,
     build_identity_split_text,
     build_invites_text,
+    build_owner_setup_status,
     build_subscription_text,
     build_support_text,
     build_team_text,
     build_workspace_selector_text,
+    owner_setup_missing_labels,
+    owner_setup_needs_attention,
 )
+from utils.reschedule import DEFAULT_RESCHEDULE_CONFIG, load_reschedule_config
 from utils.workspace import (
     build_invite_start_link,
     extract_invite_token,
@@ -88,8 +92,8 @@ class BillingUiTest(unittest.TestCase):
 
         text = build_subscription_text(snapshot, snapshot["product"])
 
-        self.assertIn("Google Calendar sync", text)
-        self.assertIn("weekly digest", text)
+        self.assertIn("синхронизация с Google Calendar", text)
+        self.assertIn("еженедельная сводка", text)
 
     def test_segmented_recipient_keyboard_exposes_segment_buttons(self):
         kb = make_recipient_select_keyboard(
@@ -108,7 +112,21 @@ class BillingUiTest(unittest.TestCase):
         texts = [button.text for row in kb.inline_keyboard for button in row]
 
         self.assertIn("✅ Группы", texts)
-        self.assertIn("➕ Calendar sync", texts)
+        self.assertIn("➕ Синхронизация с Google Calendar", texts)
+
+    def test_reschedule_config_uses_account_scoped_info_only(self):
+        config = load_reschedule_config(
+            {
+                "reschedule": {
+                    "slot_count": 5,
+                    "weekly_windows": {"1": [["12:00", "15:00"]]},
+                }
+            }
+        )
+
+        self.assertEqual(config["slot_count"], 5)
+        self.assertEqual(config["weekly_windows"], {"1": [["12:00", "15:00"]]})
+        self.assertEqual(config["window_days"], DEFAULT_RESCHEDULE_CONFIG["window_days"])
 
 
 class WorkspaceStageFourTest(unittest.TestCase):
@@ -129,9 +147,22 @@ class WorkspaceStageFourTest(unittest.TestCase):
         texts = [button.text for row in kb.inline_keyboard for button in row]
 
         self.assertIn("🛠 Панель", texts)
-        self.assertIn("🧭 Workspace", texts)
+        self.assertIn("🏢 Аккаунт", texts)
         self.assertIn("💼 Продукт", texts)
+        self.assertIn("👥 Команда", texts)
+        self.assertIn("👤 Профиль", texts)
         self.assertNotIn("📅 Расписание", texts)
+
+    def test_role_aware_keyboard_for_parent_uses_parent_ia(self):
+        kb = get_main_menu_keyboard("parent")
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+
+        self.assertIn("👨‍👧 Дети", texts)
+        self.assertIn("💰 Оплата", texts)
+        self.assertIn("👤 Профиль", texts)
+        self.assertNotIn("📅 Расписание", texts)
+        self.assertNotIn("📚 Домашние задания", texts)
+        self.assertNotIn("❄️ Заморозка", texts)
 
     def test_workspace_selector_text_mentions_last_active_account(self):
         text = build_workspace_selector_text(
@@ -143,8 +174,8 @@ class WorkspaceStageFourTest(unittest.TestCase):
             identity={"full_name": "Анна Оператор", "last_active_account_id": 2},
         )
 
-        self.assertIn("Workspace Selector", text)
-        self.assertIn("Last active account: <b>2</b>", text)
+        self.assertIn("Аккаунты", text)
+        self.assertIn("Последний открытый аккаунт: <b>2</b>", text)
         self.assertIn("Scale Studio", text)
         self.assertIn("Exam Club", text)
 
@@ -191,6 +222,45 @@ class WorkspaceStageFourTest(unittest.TestCase):
         self.assertIn(workspace_role_label("assistant"), text)
         self.assertIn("https://t.me/TutorbotDemoBot?start=join_abc123", text)
 
+    def test_owner_setup_status_requires_payment_method_student_and_lesson(self):
+        status = build_owner_setup_status(
+            {
+                "resolved": {
+                    "branding": {"display_name": "Scale"},
+                    "contacts": {"telegram": "@scale"},
+                    "requisites": {"rates": ["0 рублей / 60 минут"]},
+                }
+            },
+            {"active_students": 0, "lessons_next_7_days": 0},
+            calendar_connected=False,
+        )
+
+        self.assertTrue(status["branding"])
+        self.assertTrue(status["contacts"])
+        self.assertFalse(status["requisites"])
+        self.assertFalse(status["students"])
+        self.assertFalse(status["lessons"])
+        self.assertTrue(owner_setup_needs_attention(status))
+        self.assertEqual(
+            owner_setup_missing_labels(status),
+            ["реквизиты", "первого ученика", "первое занятие"],
+        )
+
+    def test_owner_setup_status_stops_reminding_after_core_steps_are_done(self):
+        status = build_owner_setup_status(
+            {
+                "resolved": {
+                    "branding": {"display_name": "Scale"},
+                    "contacts": {"telegram": "@scale"},
+                    "requisites": {"rates": ["0 рублей / 60 минут"], "sbp": "+7 900 000-00-00"},
+                }
+            },
+            {"active_students": 1, "lessons_next_7_days": 2},
+            calendar_connected=False,
+        )
+
+        self.assertFalse(owner_setup_needs_attention(status))
+
     def test_support_text_includes_partition_summary(self):
         resolved = resolve_subscription(
             {
@@ -203,7 +273,7 @@ class WorkspaceStageFourTest(unittest.TestCase):
         )
         product = {
             "product_name": "TutorScalebot",
-            "support_contact": "support@example.com",
+            "support_contact": "tutor.m.vetrov@gmail.com",
             "plans": {
                 "practice": {"display_name": "Practice"},
             },
@@ -258,12 +328,12 @@ class WorkspaceStageFourTest(unittest.TestCase):
             product,
         )
 
-        self.assertIn("Support Tooling", text)
+        self.assertIn("Служебная сводка", text)
         self.assertIn("Demo Workspace", text)
-        self.assertIn("Data Partitioning", text)
-        self.assertIn("Identity Split Readiness", text)
-        self.assertIn("Surrogate User Refs", text)
-        self.assertIn("Identity across workspaces", text)
+        self.assertIn("Проверка данных", text)
+        self.assertIn("Связи пользователей", text)
+        self.assertIn("Внутренние ссылки", text)
+        self.assertIn("Профиль оператора", text)
         self.assertIn("Second Workspace", text)
         self.assertIn("users: account=5, other=0, null=0", text)
 
@@ -277,9 +347,9 @@ class WorkspaceStageFourTest(unittest.TestCase):
             current_role="manager",
         )
 
-        self.assertIn("Команда workspace", text)
+        self.assertIn("Команда", text)
         self.assertIn("Scale Studio", text)
-        self.assertIn("Ваш текущий доступ: <b>Менеджер</b>", text)
+        self.assertIn("Ваш доступ: <b>Менеджер</b>", text)
         self.assertIn("@anna", text)
 
     def test_identity_split_text_reports_missing_links(self):
@@ -294,9 +364,9 @@ class WorkspaceStageFourTest(unittest.TestCase):
             }
         )
 
-        self.assertIn("Есть записи без identity link", text)
-        self.assertIn("Global identities: <b>7</b>", text)
-        self.assertIn("Users без identity: <b>2</b>", text)
+        self.assertIn("Есть записи без привязки пользователя", text)
+        self.assertIn("Профилей Telegram: <b>7</b>", text)
+        self.assertIn("Пользователей без привязки: <b>2</b>", text)
 
     def test_domain_user_refs_text_reports_missing_surrogate_refs(self):
         text = build_domain_user_refs_text(
@@ -310,7 +380,7 @@ class WorkspaceStageFourTest(unittest.TestCase):
             }
         )
 
-        self.assertIn("legacy-only строки", text)
+        self.assertIn("новые связи ещё не заполнены", text)
         self.assertIn("lessons.student_user_id: <b>2</b>", text)
         self.assertIn("payments.student_user_id: <b>1</b>", text)
 

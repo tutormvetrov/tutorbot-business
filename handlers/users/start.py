@@ -5,16 +5,31 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from data import config
-from data.config import get_product_name, load_product_config, load_teacher_info, is_internal_test_account
+from data.config import get_product_name, load_product_config, is_internal_test_account
 from keyboards.inline import (
     get_main_menu_keyboard, role_keyboard, level_keyboard,
-    cancel_fsm_keyboard, make_invite_join_keyboard, make_post_registration_keyboard, level_test_prompt_keyboard,
+    cancel_fsm_keyboard, make_invite_join_keyboard, make_post_registration_keyboard,
+    owner_onboarding_keyboard, owner_setup_keyboard,
 )
 from states.registration import Registration
+from utils.account_ui import (
+    build_teacher_info_from_ui,
+    resolve_ui_payload,
+    ui_copy_text,
+    ui_display_name,
+    ui_tone,
+)
 from utils.db_api.postgresql import Database
-from utils.product_ui import build_owner_onboarding_text, build_workspace_menu_text
+from utils.domain_errors import BusinessRuleError
+from utils.product_ui import (
+    build_owner_onboarding_text,
+    build_owner_setup_status,
+    build_workspace_menu_text,
+    owner_setup_missing_labels,
+    owner_setup_needs_attention,
+)
 from utils.text_utils import normalize_language, parse_age
-from utils.ui_text import MAIN_MENU_TEXT
+from utils.ui_text import MAIN_MENU_TEXT, build_contacts_text
 from utils.workspace import extract_invite_token, extract_start_payload, workspace_role_label
 
 router = Router()
@@ -27,8 +42,8 @@ def _progress(step: int, total: int) -> str:
     return f"\n\n<i>Шаг {step} из {total}: {filled}{empty}</i>"
 
 
-def _menu_keyboard_for_role(role: str | None, user_id: int) -> object:
-    return get_main_menu_keyboard(role, is_platform_admin=user_id == config.ADMIN_ID)
+def _menu_keyboard_for_role(role: str | None, user_id: int, ui_config: dict | None = None) -> object:
+    return get_main_menu_keyboard(role, is_platform_admin=user_id == config.ADMIN_ID, ui_config=ui_config)
 
 
 async def _identity_id_for(db: Database, telegram_id: int, full_name: str = "", username: str | None = None) -> int | None:
@@ -42,14 +57,33 @@ async def _identity_id_for(db: Database, telegram_id: int, full_name: str = "", 
     return identity["id"] if identity else None
 
 
+async def _operator_recipient_ids(db: Database) -> list[int]:
+    if hasattr(db, "get_account_operator_chat_ids"):
+        return await db.get_account_operator_chat_ids()
+    return [config.ADMIN_ID] if config.ADMIN_ID else []
+
+
+async def _notify_account_operators(bot, db: Database, text: str, reply_markup=None):
+    recipients = await _operator_recipient_ids(db)
+    for chat_id in recipients:
+        try:
+            await bot.send_message(chat_id, text, reply_markup=reply_markup)
+        except Exception as exc:
+            logger.warning("Не удалось отправить account-scoped уведомление в %s: %s", chat_id, exc)
+
+
 async def _complete_workspace_invite(message: Message, db: Database, invite_token: str) -> bool:
     previous_context = await db.resolve_account_context(message.from_user.id)
-    invite_result = await db.redeem_account_invite(
-        invite_token,
-        message.from_user.id,
-        full_name=message.from_user.full_name,
-        username=message.from_user.username,
-    ) if hasattr(db, "redeem_account_invite") else None
+    try:
+        invite_result = await db.redeem_account_invite(
+            invite_token,
+            message.from_user.id,
+            full_name=message.from_user.full_name,
+            username=message.from_user.username,
+        ) if hasattr(db, "redeem_account_invite") else None
+    except BusinessRuleError as exc:
+        await message.answer(f"⚠️ {html.quote(str(exc))}")
+        return True
     if not invite_result:
         return False
 
@@ -68,11 +102,11 @@ async def _complete_workspace_invite(message: Message, db: Database, invite_toke
         previous_account_name = None
 
     await message.answer(
-        "✅ <b>Workspace подключён</b>\n\n"
+        "✅ <b>Аккаунт подключён</b>\n\n"
         f"Аккаунт: <b>{html.quote(account.get('name', get_product_name()))}</b>\n"
         f"Роль: <b>{html.quote(role_label)}</b>\n\n"
-        "Инвайт погашен, этот workspace уже закреплён как активный. Можно сразу открыть его, "
-        "вернуться в прошлый account или переключиться через selector.",
+        "Приглашение принято. Этот аккаунт уже выбран основным. Можно сразу открыть его, "
+        "вернуться в прошлый аккаунт или переключиться через список аккаунтов.",
         reply_markup=make_invite_join_keyboard(
             previous_account_id=previous_account_id,
             previous_account_name=previous_account_name,
@@ -113,14 +147,14 @@ async def _register_admin(message: Message, db: Database):
     if hasattr(db, "ensure_default_subscription"):
         await db.ensure_default_subscription()
     product = load_product_config()
+    ui_snapshot = await db.get_resolved_ui_config(account_id) if hasattr(db, "get_resolved_ui_config") else {}
     snapshot = await db.get_account_billing_snapshot() if hasattr(db, "get_account_billing_snapshot") else {
         "resolved": type("Snapshot", (), {"effective_status": "trial", "effective_plan_code": "practice", "trial_ends_at": None, "paid_until": None, "is_trial_active": True})(),
     }
     await message.answer(
         f"{build_owner_onboarding_text(snapshot, product)}\n\n"
-        "Используйте /admin для панели управления и продуктовых настроек.\n\n"
-        f"{MAIN_MENU_TEXT}",
-        reply_markup=_menu_keyboard_for_role("owner", message.from_user.id),
+        "Откройте быстрый запуск ниже: он проведёт по обязательным первым шагам без лишней ручной настройки.",
+        reply_markup=owner_onboarding_keyboard,
     )
 
 
@@ -129,7 +163,9 @@ async def command_start(message: Message, state: FSMContext, db: Database):
     await state.clear()
     logger.info(f"Команда /start от {message.from_user.id}")
     user_id = message.from_user.id
-    product_name = get_product_name()
+    ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    product_name = ui_display_name(ui_payload, fallback=get_product_name())
     payload = extract_start_payload(message.text)
     invite_token = extract_invite_token(payload)
 
@@ -142,27 +178,45 @@ async def command_start(message: Message, state: FSMContext, db: Database):
         if invite_redeemed:
             return
         await message.answer(
-            "⚠️ Этот invite уже недействителен: он мог истечь, быть отозван или уже использован.\n\n"
-            "Если доступ ещё нужен, попросите owner или product-admin выпустить новый инвайт.",
+            "⚠️ Эта ссылка уже недействительна: она могла истечь, быть отозвана или уже использована.\n\n"
+            "Если доступ ещё нужен, попросите владельца аккаунта создать новую ссылку.",
         )
 
     user = await db.get_user(user_id)
 
     if not user:
+        start_intro = ui_copy_text(ui_payload, "start_intro", fallback=f"👋 Добро пожаловать в {product_name}!")
         await message.answer(
-            f"👋 <b>Добро пожаловать в {html.quote(product_name)}!</b>\n\n"
-            "Пожалуйста, выберите вашу роль:",
+            f"{start_intro}\n\n"
+            "Выберите вашу роль:",
             reply_markup=role_keyboard,
         )
     else:
         full_name = html.quote(user["full_name"])
         account = await db.get_account()
         account_user = await db.get_account_user(user_id, account["id"]) if account else None
+        ui_snapshot = await db.get_resolved_ui_config(db.require_account_id()) if hasattr(db, "get_resolved_ui_config") else {}
+        ui_payload = resolve_ui_payload(ui_snapshot)
         await message.answer(
             f"👋 С возвращением, <b>{full_name}</b>!\n\n"
             f"{build_workspace_menu_text(dict(account or {}), dict(account_user or {}), MAIN_MENU_TEXT)}",
-            reply_markup=_menu_keyboard_for_role(user.get("role"), user_id),
+            reply_markup=_menu_keyboard_for_role(user.get("role"), user_id, ui_payload),
         )
+        if user.get("role") == "owner":
+            analytics = await db.get_account_analytics_snapshot() if hasattr(db, "get_account_analytics_snapshot") else {}
+            status = build_owner_setup_status(
+                ui_snapshot,
+                dict(analytics or {}),
+                calendar_connected=bool((config.GOOGLE_CALENDAR_ID or "").strip()),
+            )
+            if owner_setup_needs_attention(status):
+                pending = owner_setup_missing_labels(status)
+                await message.answer(
+                    "🚦 Быстрый запуск ещё не завершён.\n\n"
+                    f"Осталось закрыть: <b>{html.quote(', '.join(pending))}</b>.\n"
+                    "Там собраны оформление, контакты, реквизиты и первые рабочие шаги.",
+                    reply_markup=owner_setup_keyboard,
+                )
 
 
 # ─── Role selected ────────────────────────────────────────────────────────────
@@ -308,6 +362,22 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         username=callback_query.from_user.username or "",
         telegram_id=user_id,
     )
+    if hasattr(db, "ensure_student_capacity"):
+        try:
+            await db.ensure_student_capacity(
+                user_id,
+                is_internal=is_internal_account,
+                account_id=account_id,
+            )
+        except BusinessRuleError as exc:
+            await state.clear()
+            await callback_query.message.edit_text(
+                f"⚠️ {html.quote(str(exc))}\n\n"
+                "Если нужно, можно выбрать другой тариф или попросить преподавателя освободить слот.",
+                reply_markup=cancel_fsm_keyboard,
+            )
+            await callback_query.answer()
+            return
 
     async with db.pool.acquire() as conn:
         await conn.execute(
@@ -347,21 +417,24 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     safe_language = html.quote(language)
     safe_level_label = html.quote(level_label)
 
-    if config.ADMIN_ID:
-        try:
-            await callback_query.bot.send_message(
-                config.ADMIN_ID,
-                f"🎉 <b>Новый ученик!</b>\n\n"
-                f"👤 {safe_full_name}\n"
-                f"🎂 Возраст: {data.get('age')} лет\n"
-                f"📚 Язык: {safe_language}  •  📊 Уровень: {safe_level_label}",
-            )
-        except Exception as exc:
-            logger.warning("Не удалось отправить админу уведомление о новом ученике %s: %s", user_id, exc)
+    await _notify_account_operators(
+        callback_query.bot,
+        db,
+        f"🎉 <b>Новый ученик!</b>\n\n"
+        f"👤 {safe_full_name}\n"
+        f"🎂 Возраст: {data.get('age')} лет\n"
+        f"📚 Язык: {safe_language}  •  📊 Уровень: {safe_level_label}",
+    )
 
-    from handlers.users.callbacks import _build_contacts_text
-    info = load_teacher_info()
-    contacts_text = _build_contacts_text(info, show_address=True)
+    ui_snapshot = await db.get_resolved_ui_config(account_id) if hasattr(db, "get_resolved_ui_config") else {}
+    ui_payload = resolve_ui_payload(ui_snapshot)
+    info = build_teacher_info_from_ui(ui_payload)
+    contacts_text = build_contacts_text(
+        info,
+        show_address=True,
+        tone=ui_tone(ui_payload),
+        intro_text=ui_copy_text(ui_payload, "post_registration_intro"),
+    )
     booking_url = info.get("contacts", {}).get("booking_url", "")
     website_url = info.get("contacts", {}).get("project_site_url", "")
 
@@ -369,13 +442,9 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 {safe_full_name}  •  🎂 {data.get('age')} лет\n"
         f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
-        f"{contacts_text}",
+        f"{contacts_text}\n\n"
+        "Тест уровня и уведомления доступны в профиле.",
         reply_markup=make_post_registration_keyboard(booking_url, website_url),
-    )
-    await callback_query.message.answer(
-        "🧪 Хотите пройти тест на определение вашего текущего уровня знаний по "
-        "английскому или французскому языку?",
-        reply_markup=level_test_prompt_keyboard,
     )
     await callback_query.answer()
 
@@ -447,15 +516,11 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
     safe_full_name = html.quote(full_name)
     safe_student_name = html.quote(student_name)
     safe_student_age = html.quote(student_age)
+    ui_snapshot = await db.get_resolved_ui_config(account_id) if hasattr(db, "get_resolved_ui_config") else {}
     await message.answer(
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 Вы: {safe_full_name}\n"
         f"👧 Ребёнок: {safe_student_name}, {safe_student_age} лет.\n\n"
-        f"{MAIN_MENU_TEXT}",
-        reply_markup=_menu_keyboard_for_role("parent", message.from_user.id),
-    )
-    await message.answer(
-        "🧪 Хотите пройти тест на определение вашего текущего уровня знаний по "
-        "английскому или французскому языку?",
-        reply_markup=level_test_prompt_keyboard,
+        "Главные действия для родителя собраны в меню ниже.",
+        reply_markup=_menu_keyboard_for_role("parent", message.from_user.id, resolve_ui_payload(ui_snapshot)),
     )

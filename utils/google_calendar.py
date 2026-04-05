@@ -9,25 +9,22 @@ This avoids fuzzy name guessing and produces a detailed sync report.
 """
 import asyncio
 import html
-import json
 import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from data import config
+from utils import runtime_store
+from utils.timezone import DEFAULT_ACCOUNT_TIMEZONE, account_now, get_timezone, to_account_naive
 
 if TYPE_CHECKING:
     from utils.db_api.postgresql import Database
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SYNC_REPORT_FILE = PROJECT_ROOT / "data" / "calendar_sync_report.json"
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LESSON_TITLE_MARKERS = (
     "урок с ",
     "урок со ",
@@ -141,8 +138,19 @@ def _parse_event_student_id(event: dict) -> int | None:
     return None
 
 
-def _parse_event_start(event: dict) -> tuple[datetime | None, str | None]:
-    """Parse event start time and keep everything in Moscow local time."""
+def _calendar_sync_report_key(account_id: int | None) -> str:
+    if account_id is None:
+        return "calendar_sync_report"
+    return f"calendar_sync_report:{int(account_id)}"
+
+
+def _format_timezone_label(timezone_name: str | None) -> str:
+    zone = get_timezone(timezone_name)
+    return getattr(zone, "key", str(zone))
+
+
+def _parse_event_start(event: dict, timezone_name: str | None) -> tuple[datetime | None, str | None]:
+    """Parse event start time and normalize it to the account local wall clock."""
     start = event.get("start", {})
     if start.get("date") and not start.get("dateTime"):
         return None, "all_day_event"
@@ -157,9 +165,16 @@ def _parse_event_start(event: dict) -> tuple[datetime | None, str | None]:
         return None, "invalid_start"
 
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+        event_timezone = (start.get("timeZone") or "").strip()
+        if event_timezone:
+            try:
+                value = value.replace(tzinfo=ZoneInfo(event_timezone))
+            except Exception:
+                value = value.replace(tzinfo=get_timezone(timezone_name))
+        else:
+            value = value.replace(tzinfo=get_timezone(timezone_name))
 
-    return value.astimezone(MOSCOW_TZ).replace(tzinfo=None), None
+    return to_account_naive(value, timezone_name), None
 
 
 def _event_start_label(event: dict) -> str:
@@ -352,18 +367,13 @@ def _match_student_from_links(event: dict, students_by_id: dict, links: list[dic
     return matched_ids.pop(), "alias"
 
 
-def _save_sync_report(report: dict):
-    SYNC_REPORT_FILE.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+async def _save_sync_report(report: dict, account_id: int | None):
+    await runtime_store.write_document(_calendar_sync_report_key(account_id), report)
 
 
-def load_last_sync_report() -> dict:
-    if not SYNC_REPORT_FILE.exists():
-        return {}
+async def load_last_sync_report(account_id: int | None = None) -> dict:
     try:
-        return json.loads(SYNC_REPORT_FILE.read_text(encoding="utf-8"))
+        return await runtime_store.load_document(_calendar_sync_report_key(account_id))
     except Exception:
         return {}
 
@@ -426,6 +436,10 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
     """
     loop = asyncio.get_event_loop()
     events = await loop.run_in_executor(None, lambda: _fetch_events(days_ahead))
+    account_id = db.require_account_id() if hasattr(db, "require_account_id") else None
+    timezone_name = await db.get_account_timezone() if hasattr(db, "get_account_timezone") else DEFAULT_ACCOUNT_TIMEZONE
+    reference_now = await db.get_account_now() if hasattr(db, "get_account_now") else datetime.now()
+    local_now = account_now(timezone_name)
 
     students = await db.get_all_students()
     students_by_id = {student["telegram_id"]: student for student in students}
@@ -434,7 +448,8 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
 
     report = {
         "synced_at": datetime.now(timezone.utc).isoformat(),
-        "synced_at_local": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S МСК"),
+        "synced_at_local": local_now.strftime("%d.%m.%Y %H:%M:%S ") + _format_timezone_label(timezone_name),
+        "timezone": _format_timezone_label(timezone_name),
         "window_days": days_ahead,
         "events_fetched": len(events),
         "imported": 0,
@@ -497,7 +512,7 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
             )
             continue
 
-        lesson_date, start_reason = _parse_event_start(event)
+        lesson_date, start_reason = _parse_event_start(event, timezone_name)
         if not lesson_date:
             report["skipped"] += 1
             report["skipped_items"].append(
@@ -518,7 +533,7 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
                 {"start": _event_start_label(event), "summary": summary, "reason": "db_error"}
             )
 
-    db_event_ids = set(await db.get_google_event_ids_in_window(days_ahead))
+    db_event_ids = set(await db.get_google_event_ids_in_window(days_ahead, reference_now=reference_now))
     orphaned = db_event_ids - calendar_event_ids
     if orphaned:
         await db.delete_lessons_by_event_ids(list(orphaned))
@@ -529,7 +544,7 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
         key=lambda item: (-item["count"], item["student_hint"]),
     )
 
-    _save_sync_report(report)
+    await _save_sync_report(report, account_id)
     logger.info(
         "Google Calendar sync: fetched=%s imported=%s updated=%s skipped=%s deleted=%s",
         report["events_fetched"],

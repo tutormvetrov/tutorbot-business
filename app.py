@@ -16,6 +16,7 @@ from data import config
 from loader import bot, dp
 from utils.db_api.postgresql import Database
 from utils.observability import update_ops_status, write_runtime_event
+from utils.runtime_store import close_runtime_store
 from utils.ui_text import DEACTIVATED_ACCOUNT_TEXT
 from utils.workspace import (
     extract_invite_token,
@@ -118,7 +119,7 @@ async def main():
     # Проверяем токен
     me = await bot.get_me()
     logger.info(f"Бот @{me.username} успешно подключён!")
-    write_runtime_event("startup", "ok", bot_username=me.username)
+    await write_runtime_event("startup", "ok", bot_username=me.username)
 
     # Инициализируем БД
     db = Database()
@@ -126,7 +127,7 @@ async def main():
     await db.create_all_tables()
     await db.sync_all_parent_links()
     logger.info("База данных готова.")
-    update_ops_status(status="starting", bot_username=me.username, scheduler="starting")
+    await update_ops_status(status="starting", bot_username=me.username, scheduler="starting")
 
     # Регистрируем middleware — db попадёт в каждый хендлер как параметр
     dp.update.middleware(DatabaseMiddleware(db))
@@ -136,7 +137,7 @@ async def main():
     scheduler = setup_scheduler(bot, db)
     scheduler.start()
     logger.info("Планировщик запущен.")
-    update_ops_status(status="running", bot_username=me.username, scheduler="running")
+    await update_ops_status(status="running", bot_username=me.username, scheduler="running")
 
     # Публичные команды
     public_commands = [
@@ -168,11 +169,12 @@ async def main():
         await dp.start_polling(bot)
     finally:
         logger.info("Останавливаем бота...")
-        write_runtime_event("shutdown", "ok")
-        update_ops_status(status="stopping", bot_username=me.username, scheduler="stopping")
+        await write_runtime_event("shutdown", "ok")
+        await update_ops_status(status="stopping", bot_username=me.username, scheduler="stopping")
         scheduler.shutdown()
         if db.pool:
             await db.pool.close()
+        await close_runtime_store()
         await bot.session.close()
 
 
